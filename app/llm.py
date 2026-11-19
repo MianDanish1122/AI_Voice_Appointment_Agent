@@ -22,10 +22,11 @@ GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
 
 def _providers() -> list[tuple[str, str, str]]:
     """(base_url, api_key, model) in priority order."""
+    # main model -> Gemini (better than the small Groq models) -> smaller Groq models
     out = [(config.LLM_BASE_URL, config.LLM_API_KEY, config.LLM_MODEL)]
-    out += [(config.LLM_BASE_URL, config.LLM_API_KEY, m) for m in config.LLM_FALLBACK_MODELS if m != config.LLM_MODEL]
     if config.GEMINI_API_KEY:
         out += [(GEMINI_URL, config.GEMINI_API_KEY, m) for m in config.GEMINI_MODELS]
+    out += [(config.LLM_BASE_URL, config.LLM_API_KEY, m) for m in config.LLM_FALLBACK_MODELS if m != config.LLM_MODEL]
     return out
 
 
