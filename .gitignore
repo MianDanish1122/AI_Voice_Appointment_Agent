@@ -8,3 +8,5 @@ tools/
 __pycache__/
 *.db
 *.pyc
+*.mp4
+*.mov
