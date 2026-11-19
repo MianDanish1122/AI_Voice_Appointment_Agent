@@ -117,13 +117,26 @@
 const $ = id => document.getElementById(id);
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 const LANG = 'en-US';            // English only
-const SILENCE_MS = 1800;         // caller silence before we reply
-const NATURAL_TIMEOUT_MS = 4000; // if the natural voice isn't playing by then, use the browser voice
+const SILENCE_MS = 1300;         // caller silence before we reply
+const NATURAL_TIMEOUT_MS = 2500; // if the natural voice isn't playing by then, use the browser voice
+const NATURAL_OK_MS = 2500;      // page-load speed probe: slower than this -> default to the (instant) browser voice
 
 // phase: idle | listening | thinking | speaking
 let phase = 'idle', sessionId = null, rec = null, micOn = true;
 let finalBuf = '', interim = '', silenceTimer = null;
 let audio = null, speakingText = '', speakDone = null, naturalSlow = false;
+let lastAgentText = '', agentEndedAt = 0, naturalForced = false;
+$('voice').onchange = () => { naturalForced = $('voice').value === 'natural'; };
+
+// Did the mic just hear the agent's own voice coming out of the speakers (echo) rather than the caller?
+function isEcho(text) {
+  const words = (text.toLowerCase().match(/[a-z0-9']+/g) || []);
+  if (words.length < 3) return false;
+  const own = new Set((lastAgentText.toLowerCase().match(/[a-z0-9']+/g) || []));
+  const ratio = words.filter(w => own.has(w)).length / words.length;
+  const recent = Date.now() - agentEndedAt < 5000;
+  return ratio >= (recent ? 0.6 : 0.85) && words.length >= (recent ? 3 : 6);
+}
 
 function add(cls, text, who) {
   const e = $('empty'); if (e) e.remove();
@@ -156,7 +169,7 @@ function browserSpeak(text) {
     const v = sel !== 'natural' ? vs[+sel]
       : (vs.find(v => /natural|online/i.test(v.name) && v.lang.startsWith('en')) || vs.find(v => v.name.includes('Google US English')) || vs.find(v => v.lang === LANG));
     if (v) u.voice = v;
-    u.lang = LANG; u.rate = 1.03; u.onend = u.onerror = res;
+    u.lang = LANG; u.rate = 1.08; u.onend = u.onerror = res;
     speechSynthesis.speak(u);
   });
 }
@@ -175,16 +188,17 @@ function naturalSpeak(text) {
 }
 
 async function speak(text) {
-  phase = 'speaking'; speakingText = text.toLowerCase();
+  phase = 'speaking'; speakingText = text.toLowerCase(); lastAgentText = text;
   finalBuf = interim = '';
   status('Agent is speaking…' + ($('bargeIn').checked ? ' (you can interrupt)' : ''), 'speaking');
   ensureRec();
   let ok = false;
-  if ($('voice').value === 'natural' && !naturalSlow) {
+  if ($('voice').value === 'natural' && (!naturalSlow || naturalForced)) {
     ok = await naturalSpeak(text);
     if (!ok && phase === 'speaking') { naturalSlow = true; sysMsg('Natural voice is slow on this network — using the browser voice for this call.'); }
   }
   if (!ok && phase === 'speaking') await browserSpeak(text);
+  agentEndedAt = Date.now();
 }
 
 function stopSpeaking() {
@@ -210,6 +224,7 @@ function ensureRec() {
       const r = e.results[i];
       if (r.isFinal) finalBuf += ' ' + r[0].transcript; else interim += r[0].transcript;
     }
+    if (isEcho(heard())) { finalBuf = interim = ''; return; }   // agent's own voice, not the caller
     if (phase === 'speaking') {
       if ($('bargeIn').checked && isRealInterruption(heard())) {
         stopSpeaking(); if (speakDone) speakDone();
@@ -233,7 +248,9 @@ function startListening() {
   if (phase === 'idle') return;
   phase = 'listening'; finalBuf = interim = '';
   status(micOn && SR ? 'Listening… speak now' : 'Type your message below.', micOn && SR ? 'listening' : 'live');
-  ensureRec();
+  // restart the recognizer so late echo of the agent's last words is thrown away
+  if (rec) { rec.onend = rec.onresult = rec.onerror = null; try { rec.abort(); } catch (_) {} rec = null; }
+  setTimeout(ensureRec, 250);
 }
 function finishUtterance() { const t = heard(); if (phase === 'listening' && t) send(t); }
 
@@ -265,7 +282,7 @@ async function send(text) {
 async function start() {
   const b = $('callBtn'); b.textContent = 'End call'; b.classList.add('end');
   $('text').disabled = false; $('micBtn').disabled = false;
-  $('log').innerHTML = ''; micOn = true; naturalSlow = false; updateMicBtn();
+  $('log').innerHTML = ''; micOn = true; updateMicBtn();
   phase = 'thinking'; status('Connecting…', 'thinking');
   try {
     const data = await (await fetch('/api/web/start', { method:'POST' })).json();
@@ -311,6 +328,33 @@ $('refresh').onclick = loadBookings;
 if (!SR) status('This browser cannot listen — use Chrome or Edge, or type your messages.');
 if (window.speechSynthesis) { fillVoices(); speechSynthesis.onvoiceschanged = fillVoices; }
 loadBookings();
+
+// Best instant browser voice: Edge's "Natural/Online" voices sound great; else Google/Microsoft English.
+function bestBrowserVoice() {
+  const vs = speechSynthesis.getVoices().map((v, i) => [v, i]).filter(([v]) => v.lang.startsWith('en'));
+  const pick = re => vs.find(([v]) => re.test(v.name));
+  const f = pick(/natural|online/i) || pick(/google us english/i) || pick(/zira|aria|jenny|samantha|google/i) || vs[0];
+  return f ? String(f[1]) : null;
+}
+
+// Measure the natural (neural) voice once. If it takes too long on this network, start with the instant browser voice.
+async function probeNatural() {
+  const t0 = performance.now();
+  try {
+    const r = await fetch('/api/tts?text=' + encodeURIComponent('Okay, one moment.'));
+    await r.arrayBuffer();
+    if (!r.ok) throw new Error('tts ' + r.status);
+  } catch (_) { return useBrowserVoice('Natural voice unavailable'); }
+  const ms = performance.now() - t0;
+  if (ms > NATURAL_OK_MS) useBrowserVoice('Natural voice is slow on this network (' + (ms / 1000).toFixed(1) + 's)');
+}
+function useBrowserVoice(why) {
+  naturalSlow = true;
+  const i = window.speechSynthesis ? bestBrowserVoice() : null;
+  if (i !== null) { $('voice').value = i; }
+  if (phase === 'idle') $('status').textContent = why + ' — using the fast browser voice. Pick "Natural" in the list to force it.';
+}
+setTimeout(() => { fillVoices(); probeNatural(); }, 800);
 </script>
 </body>
 </html>
