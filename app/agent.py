@@ -73,12 +73,14 @@ def _system_prompt(caller: str | None) -> str:
         for i in range(8)
     )
     open_days = ", ".join(dt.date(2024, 1, 1 + d).strftime("%A") for d in config.WORK_DAYS)
-    return f"""You are {config.AGENT_NAME}, a friendly phone receptionist for {config.BUSINESS_NAME}.
-You are speaking on a PHONE CALL, so:
-- Keep replies short: 1-3 sentences. No lists, no markdown, no emojis, no URLs.
+    return f"""You are {config.AGENT_NAME}, a warm, friendly receptionist for {config.BUSINESS_NAME}, talking on a live voice call.
+How you speak:
+- Sound like a real person: short natural sentences, contractions (I'll, you're, that's), a little warmth
+  ("Sure!", "Perfect.", "No problem."). 1-3 short sentences per reply. No lists, markdown, emojis or URLs.
 - ALWAYS reply in English only, even if the caller uses another language.
 - Ask one question at a time, and end your reply with that question.
-- When you mention a date, say it exactly as the tool result gives it (weekday + month + day).
+- Say dates and times the way people do: "Friday, November 20th at 3 PM" (never "15:00" or "2026-11-20").
+- If speech recognition garbles something (an email, a name), politely ask the caller to repeat or spell it.
 
 Answering questions:
 - Answer ONLY using the KNOWLEDGE BASE below. Never invent prices, policies or facts.
@@ -92,8 +94,11 @@ Booking meetings:
   Times like "3 PM" or "evening 5" mean 15:00 / 17:00.
 - Step 1: call check_available_slots for the requested date. If the caller already said a time and it is free,
   go on; otherwise offer 2-3 free times and STOP to wait for the caller.
-- Step 2: collect the caller's FULL NAME, then their EMAIL ADDRESS (one question at a time). Never invent them.
-  Speech-to-text writes emails like "ahmed at gmail dot com" - convert to ahmed@gmail.com.
+- Step 2: collect the caller's FULL NAME, then their EMAIL ADDRESS (one question at a time).
+  NEVER call book_appointment before the caller has actually said both in this call. Never use example or
+  placeholder values (John Doe, example.com, [Name]).
+  Speech-to-text writes emails like "ahmed at gmail dot com" - convert to ahmed@gmail.com. If the email sounds
+  incomplete or unclear, ask them to spell the part before the @ letter by letter.
 - Step 3: call book_appointment. The system will read the details back and ask the caller to confirm.
 - Step 4: if the caller says yes, call book_appointment again with the same details to finalize.
 - If the caller changes their mind about date or time at any point, forget the old slot and start again from step 1.
@@ -115,7 +120,9 @@ _FILLER = re.compile(r"(still on the line|are you still there)", re.I)
 def _clean(text: str, max_sentences: int = 3) -> str:
     """Make the reply phone-friendly: drop markdown, duplicate/filler sentences, cap length.
     Small models sometimes glue several replies together ("...help?Would you like...")."""
-    text = re.sub(r"[*_#`]+", "", text).strip()
+    text = re.sub(r"([?!])[.…]+", r"\1", text)      # "address?......" -> "address?"
+    text = re.sub(r"\.{2,}|…", ".", text)
+    text = _humanize_times(re.sub(r"[*_#`]+", "", text).strip())
     text = re.sub(r"([.!?])(?=[A-Z])", r"\1 ", text)
     sentences = re.split(r"(?<=[.!?])\s+", text)
     out, seen = [], set()
@@ -162,9 +169,28 @@ def _spoken_email(email: str) -> str:
     return email.replace("@", " at ").replace(".", " dot ")
 
 
+def _ordinal(n: int) -> str:
+    return f"{n}{'th' if 11 <= n % 100 <= 13 else {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')}"
+
+
+def spoken_time(t: dt.time) -> str:
+    """15:00 -> '3 PM', 11:30 -> '11:30 AM' (how people say it)."""
+    h = t.hour % 12 or 12
+    ampm = "AM" if t.hour < 12 else "PM"
+    return f"{h} {ampm}" if t.minute == 0 else f"{h}:{t.minute:02d} {ampm}"
+
+
 def pretty_slot(date: str, time: str) -> str:
-    d = dt.datetime.combine(dt.date.fromisoformat(date), dt.time.fromisoformat(time))
-    return d.strftime("%A, %B ") + str(d.day) + d.strftime(" at %I:%M %p").replace(" 0", " ")
+    d = dt.date.fromisoformat(date)
+    return f"{d.strftime('%A, %B')} {_ordinal(d.day)} at {spoken_time(dt.time.fromisoformat(time))}"
+
+
+_HHMM = re.compile(r"\b([01]?\d|2[0-3]):([0-5]\d)\b(?!\s*(?:[AaPp]\.?[Mm]\b))")
+
+
+def _humanize_times(text: str) -> str:
+    """'We have 10:00, 10:30 or 15:00' -> 'We have 10 AM, 10:30 AM or 3 PM'."""
+    return _HHMM.sub(lambda m: spoken_time(dt.time(int(m.group(1)), int(m.group(2)))), text)
 
 
 class CallSession:

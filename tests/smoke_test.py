@@ -59,7 +59,7 @@ assert "<Gather" in r.text and "How can I help" in r.text
 
 script += [tc("check_available_slots", {"date": DAY}), {"content": "We have 10:00 and 10:30 free. Which one?"}]
 r = c.post("/twilio/gather", data={"CallSid": "CA1", "SpeechResult": "book a meeting tomorrow"})
-assert "10:00" in r.text and "<Gather" in r.text
+assert "10 AM" in r.text and "<Gather" in r.text
 
 # placeholder name must be rejected; first real call only asks for confirmation (nothing booked yet)
 script += [tc("book_appointment", {"date": DAY, "time": "10:30", "name": "[Name]", "email": "danish@test.com"}),
