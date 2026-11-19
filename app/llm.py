@@ -82,6 +82,11 @@ async def chat(messages: list[dict], tools: list[dict] | None = None) -> dict:
                 last_err = f"LLM error {r.status_code} on {model}: {r.text[:300]}"
                 log.warning(last_err)
                 break
+            msg = r.json()["choices"][0]["message"]
+            if not (msg.get("content") or "").strip() and not msg.get("tool_calls"):
+                last_err = f"{model} returned an empty answer"
+                log.warning(last_err + " -> next provider")
+                break
             log.info("LLM %s answered in %.1fs", model, time.time() - t0)
-            return r.json()["choices"][0]["message"]
+            return msg
     raise RuntimeError(last_err)

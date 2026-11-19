@@ -31,7 +31,36 @@ def now() -> dt.datetime:
 
 
 def _parse_date(s: str) -> dt.date:
-    return dt.date.fromisoformat(s.strip())
+    """Parse YYYY-MM-DD. Models sometimes write an old year (2023) for "20 November": a date whose year is
+    before the current year is moved to the next time that month/day comes around."""
+    d = dt.date.fromisoformat(s.strip())
+    today = now().date()
+    if d.year < today.year:
+        for year in (today.year, today.year + 1):
+            try:
+                fixed = d.replace(year=year)
+            except ValueError:  # 29 Feb
+                continue
+            if fixed >= today:
+                return fixed
+    return d
+
+
+def next_day_of_month(day_num: int) -> dt.date | None:
+    """'the 20th' -> the next date (today or later) whose day number is 20."""
+    today = now().date()
+    y, m = today.year, today.month
+    for _ in range(14):
+        try:
+            d = dt.date(y, m, day_num)
+            if d >= today:
+                return d
+        except ValueError:
+            pass  # month has no such day
+        m += 1
+        if m > 12:
+            y, m = y + 1, 1
+    return None
 
 
 def _parse_time(s: str) -> dt.time:
@@ -77,7 +106,7 @@ def available_slots(date: str) -> dict:
         return {"error": f"{spoken}, {day.year} is too far ahead. Bookings are only possible within 60 days."}
     slots = _all_slots(day)
     if not slots:
-        return {"date": date, "date_spoken": spoken, "available": [], "note": "Closed on this day. Suggest another day."}
+        return {"date": day.isoformat(), "date_spoken": spoken, "available": [], "note": "Closed on this day. Suggest another day."}
     booked = _booked(day)
     step = dt.timedelta(minutes=config.SLOT_MINUTES)
     busy = []
@@ -93,7 +122,7 @@ def available_slots(date: str) -> dict:
         if s > current and s.isoformat() not in booked
         and not any(b0 < s + step and s < b1 for b0, b1 in busy)
     ]
-    return {"date": date, "date_spoken": spoken, "available": free}
+    return {"date": day.isoformat(), "date_spoken": spoken, "available": free}
 
 
 def book(date: str, time: str, name: str, phone: str = "", purpose: str = "", email: str = "") -> dict:

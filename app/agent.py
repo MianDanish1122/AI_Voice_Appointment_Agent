@@ -91,6 +91,8 @@ Booking meetings:
 - NEVER work out weekdays, past dates or availability yourself. For ANY date the caller mentions, ALWAYS call
   check_available_slots first and use its answer (it tells you if a date is past, closed or too far ahead).
 - Understand relative dates ("tomorrow", "day after tomorrow", "next Monday") using the date list below.
+  If the caller gives only a day number ("the 20th") the system adds a DATE HINT - use it; never ask for month or year.
+  Dates are always in the current or next year ({today.year}/{today.year + 1}), never earlier.
   Times like "3 PM" or "evening 5" mean 15:00 / 17:00.
 - Step 1: call check_available_slots for the requested date. If the caller already said a time and it is free,
   say so briefly ("3 PM works!") and ask for their full name; otherwise offer 2-3 free times and STOP to wait.
@@ -150,6 +152,102 @@ _GOODBYE = re.compile(r"\b(bye|goodbye|good bye|thanks|thank you|that'?s all|tha
 _EMAIL = re.compile(r"[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}")
 
 
+_MONTHS = r"jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec"
+_DAY_ONLY = re.compile(
+    rf"(?:\bon\s+(?:the\s+)?(\d{{1,2}})(?:st|nd|rd|th)?\b|\b(?:the\s+)?(\d{{1,2}})(?:st|nd|rd|th)\b|\b(\d{{1,2}})\s+(?:date|tareekh|tarikh)\b)"
+    rf"(?!\s*(?::\d|am\b|pm\b|a\.m|p\.m|o'clock|(?:of\s+)?(?:{_MONTHS})))", re.I)
+
+
+def _date_hint(user_text: str) -> str:
+    """The caller said only a day number ('the 20th'): work out the date in code so the model never has to
+    guess the month or year (and never asks the caller for them)."""
+    m = _DAY_ONLY.search(user_text)
+    if not m:
+        return ""
+    n = int(next(g for g in m.groups() if g))
+    d = calendar_store.next_day_of_month(n) if 1 <= n <= 31 else None
+    if not d:
+        return ""
+    return (f"\nDATE HINT: the caller said only the day number {n}. That means {d.strftime('%A, %B')} {_ordinal(d.day)}, "
+            f"{d.year} ({d.isoformat()}). Use this date with check_available_slots. NEVER ask the caller for the month or year.")
+
+
+_MONTH_NUM = {m: i + 1 for i, m in enumerate("jan feb mar apr may jun jul aug sep oct nov dec".split())}
+_MON = r"(jan\w*|feb\w*|mar\w*|apr\w*|may|jun\w*|jul\w*|aug\w*|sep\w*|oct\w*|nov\w*|dec\w*)"
+_MD = re.compile(rf"\b(\d{{1,2}})(?:st|nd|rd|th)?\s*(?:of\s+)?{_MON}\b", re.I)      # 20 November / 20th of Nov
+_DM = re.compile(rf"\b{_MON}\s+(\d{{1,2}})(?:st|nd|rd|th)?\b", re.I)                # November 20
+_TIME = re.compile(r"\b(\d{1,2})(?::([0-5]\d))?\s*(a\.?m\.?|p\.?m\.?)", re.I)
+
+
+def _extract_date(text: str) -> dt.date | None:
+    """Date the caller named: '20 November', 'Dec 3rd' or only a day number ('the 20th')."""
+    today = calendar_store.now().date()
+    m = _MD.search(text)
+    month = day = None
+    if m:
+        day, month = int(m.group(1)), _MONTH_NUM[m.group(2)[:3].lower()]
+    else:
+        m = _DM.search(text)
+        if m:
+            month, day = _MONTH_NUM[m.group(1)[:3].lower()], int(m.group(2))
+    if month and day:
+        try:
+            d = dt.date(today.year, month, day)
+            if d < today and (today - d).days > 30:   # long past this year -> they mean next year
+                d = dt.date(today.year + 1, month, day)
+        except ValueError:
+            return None
+        return d   # a date that passed within the last 30 days stays "this year" -> "that date has passed"
+    m = _DAY_ONLY.search(text)
+    if m:
+        n = int(next(g for g in m.groups() if g))
+        return calendar_store.next_day_of_month(n) if 1 <= n <= 31 else None
+    return None
+
+
+def _extract_time(text: str) -> dt.time | None:
+    m = _TIME.search(text)
+    if not m:
+        return None
+    h, minute = int(m.group(1)), int(m.group(2) or 0)
+    pm = m.group(3).lower().startswith("p")
+    if not 1 <= h <= 12:
+        return None
+    return dt.time(h % 12 + (12 if pm else 0), minute)
+
+
+async def _slots_note(user_text: str) -> tuple[str, str]:
+    """When the caller names a date, look the slots up in code. Returns (note for the model, a ready-made
+    spoken answer used if every model fails), so date questions always get a correct reply."""
+    d = _extract_date(user_text)
+    if not d:
+        return "", ""
+    res = await asyncio.to_thread(calendar_store.available_slots, d.isoformat())
+    short = f"{d.strftime('%A, %B')} {_ordinal(d.day)}"
+    label = f"{short}, {d.year}"
+    if "error" in res:
+        return (f"\nSLOTS CHECKED for {label}: {res['error']} Tell the caller this and ask for another date.",
+                f"Sorry, I can't book {short}. Could you pick another date?")
+    free = res["available"]
+    if not free:
+        return (f"\nSLOTS CHECKED for {label}: no free times ({res.get('note', 'fully booked')}). "
+                "Tell the caller and suggest another day.",
+                f"Sorry, we have no openings on {short}. Would another day work for you?")
+    spoken = [spoken_time(dt.time.fromisoformat(t)) for t in free]
+    note = f"\nSLOTS CHECKED for {label} (date {d.isoformat()}): free times: {', '.join(spoken[:8])}" + \
+           (f" and {len(free) - 8} more" if len(free) > 8 else "") + "."
+    want = _extract_time(user_text)
+    if want:
+        ok = want.strftime("%H:%M") in free
+        note += f" The caller asked for {spoken_time(want)}: it is {'FREE' if ok else 'NOT available'}."
+        fallback = (f"{spoken_time(want)} is free on {short}. May I have your full name?" if ok else
+                    f"Sorry, {spoken_time(want)} isn't available on {short}. I have {', '.join(spoken[:3])}. Which works for you?")
+    else:
+        fallback = f"On {short} I have {', '.join(spoken[:3])} open. Which time works for you?"
+    note += " Use this directly; you do not need to call check_available_slots again for this date. Never ask for month or year."
+    return note, fallback
+
+
 _YES = re.compile(r"\b(yes|yeah|yep|yup|sure|correct|right|ok|okay|confirm|confirmed|go ahead|please do|book it|"
                   r"sounds good|perfect|absolutely|definitely|haan|ji)\b", re.I)
 _NO = re.compile(r"\b(no|not|wrong|wait|change|instead|actually)\b", re.I)
@@ -205,6 +303,7 @@ class CallSession:
         self.pending: tuple[str, str] | None = None  # (date, time) waiting for caller's confirmation
         self.pending_turn = -1
         self.forced_reply: str | None = None
+        self.date_fallback = ""
         self.last_user_text = ""
         self.messages: list[dict] = [{"role": "system", "content": _system_prompt(caller)}]
 
@@ -265,6 +364,10 @@ class CallSession:
             return {"success": False, "error": "You do not know the purpose of the meeting yet. Ask the caller what "
                                                "the meeting is about. Do NOT say it is booked."}
         date, time = (args.get("date") or "").strip(), (args.get("time") or "").strip()
+        try:
+            date = calendar_store._parse_date(date).isoformat()   # fixes a stale year the model may have written
+        except ValueError:
+            return {"success": False, "error": "Invalid date. Call check_available_slots with a YYYY-MM-DD date first."}
         avail = calendar_store.available_slots(date)
         if "error" in avail:
             return {"success": False, "error": avail["error"]}
@@ -323,7 +426,8 @@ class CallSession:
         self.last_user_text = user_text
         context = kb.search(user_text + " " + " ".join(
             m["content"] for m in self.messages[-4:-1] if m["role"] == "user" and m.get("content")))
-        kb_msg = {"role": "system", "content": f"KNOWLEDGE BASE:\n{context}"}
+        slots_note, self.date_fallback = await _slots_note(user_text)
+        kb_msg = {"role": "system", "content": f"KNOWLEDGE BASE:\n{context}" + _date_hint(user_text) + slots_note}
 
         try:
             for _ in range(5):
@@ -350,6 +454,9 @@ class CallSession:
                 break
         except Exception:
             log.exception("LLM failure")
+            if self.date_fallback:   # models are down, but we can still answer a date question correctly
+                self.messages.append({"role": "assistant", "content": self.date_fallback})
+                return self.date_fallback
             if config.HUMAN_PHONE:
                 self.action = "transfer"
                 return "Sorry, I am having a technical issue. Let me connect you to a team member."
@@ -359,6 +466,9 @@ class CallSession:
             return "Please hold, I am connecting you to a team member."
         if self.action == "hangup":
             return "Thank you for calling. Goodbye!"
+        if self.date_fallback:
+            self.messages.append({"role": "assistant", "content": self.date_fallback})
+            return self.date_fallback
         return "Sorry, could you please repeat that?"
 
 
