@@ -27,7 +27,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "book_appointment",
-            "description": "Book a meeting slot once you have date, time, full name and email.",
+            "description": "Book a meeting slot once you have date, time, full name, email and purpose.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -36,9 +36,9 @@ TOOLS = [
                     "name": {"type": "string", "description": "Caller's full name"},
                     "email": {"type": "string", "description": "Caller's email in written form, e.g. ahmed.khan@gmail.com"},
                     "phone": {"type": "string", "description": "Caller phone if known"},
-                    "purpose": {"type": "string", "description": "Short reason for the meeting"},
+                    "purpose": {"type": "string", "description": "What the meeting is about, from what the caller said"},
                 },
-                "required": ["date", "time", "name", "email"],
+                "required": ["date", "time", "name", "email", "purpose"],
             },
         },
     },
@@ -93,10 +93,12 @@ Booking meetings:
 - Understand relative dates ("tomorrow", "day after tomorrow", "next Monday") using the date list below.
   Times like "3 PM" or "evening 5" mean 15:00 / 17:00.
 - Step 1: call check_available_slots for the requested date. If the caller already said a time and it is free,
-  go on; otherwise offer 2-3 free times and STOP to wait for the caller.
-- Step 2: collect the caller's FULL NAME, then their EMAIL ADDRESS (one question at a time).
-  NEVER call book_appointment before the caller has actually said both in this call. Never use example or
-  placeholder values (John Doe, example.com, [Name]).
+  say so briefly ("3 PM works!") and ask for their full name; otherwise offer 2-3 free times and STOP to wait.
+  Every reply must end with a question.
+- Step 2: collect these three things, ONE question at a time, in this order:
+  (a) the caller's FULL NAME, (b) their EMAIL ADDRESS, (c) the PURPOSE of the meeting ("What would you like to discuss?").
+  Skip any the caller already told you. NEVER call book_appointment before the caller has actually said all
+  three in this call. Never use example or placeholder values (John Doe, example.com, [Name], "Free consultation").
   Speech-to-text writes emails like "ahmed at gmail dot com" - convert to ahmed@gmail.com. If the email sounds
   incomplete or unclear, ask them to spell the part before the @ letter by letter.
 - Step 3: call book_appointment. The system will read the details back and ask the caller to confirm.
@@ -211,6 +213,7 @@ class CallSession:
         self.messages.append({"role": "assistant", "content": text})
         return text
 
+    _BAD_PURPOSE = {"", "meeting", "appointment", "n/a", "none", "unknown", "purpose"}
     _BAD_NAMES = {"", "name", "caller", "unknown", "customer", "user", "client", "n/a", "none"}
 
     def _caller_text(self) -> str:
@@ -255,6 +258,12 @@ class CallSession:
         if not all(part in caller_said.lower() for part in name.lower().split()):
             return {"success": False, "error": "The caller has not told you this name. Ask for their full name. "
                                                "Do NOT say it is booked."}
+        purpose = (args.get("purpose") or "").strip()
+        pwords = re.findall(r"[a-z]{4,}", purpose.lower())
+        if (not purpose or purpose.lower() in self._BAD_PURPOSE
+                or not any(w in caller_said.lower() for w in pwords)):
+            return {"success": False, "error": "You do not know the purpose of the meeting yet. Ask the caller what "
+                                               "the meeting is about. Do NOT say it is booked."}
         date, time = (args.get("date") or "").strip(), (args.get("time") or "").strip()
         avail = calendar_store.available_slots(date)
         if "error" in avail:
@@ -266,13 +275,13 @@ class CallSession:
         if not self._confirmed(key):
             # Ask for confirmation with a fixed sentence (dates come from the calendar, not the model).
             self.pending, self.pending_turn = key, self.turn
-            self.forced_reply = (f"Just to confirm: a meeting on {when}, for {name}, "
-                                 f"and your email is {_spoken_email(email)}. Shall I book it?")
+            self.forced_reply = (f"Just to confirm: a meeting on {when} for {name}, about {purpose.rstrip('.')}. "
+                                 f"Your email is {_spoken_email(email)}. Shall I book it?")
             return {"success": False, "needs_confirmation": True,
                     "instruction": "NOT booked yet. Waiting for the caller to say yes."}
         self.pending = None
         res = calendar_store.book(date, time, name, args.get("phone") or self.caller or "",
-                                  args.get("purpose", ""), email)
+                                  purpose, email)
         if res.get("success"):
             invite = " I've sent a calendar invite to your email." if res.get("invite_sent") else ""
             self.forced_reply = f"Done! Your meeting is booked for {when}.{invite} Is there anything else I can help you with?"

@@ -62,12 +62,12 @@ r = c.post("/twilio/gather", data={"CallSid": "CA1", "SpeechResult": "book a mee
 assert "10 AM" in r.text and "<Gather" in r.text
 
 # placeholder name must be rejected; first real call only asks for confirmation (nothing booked yet)
-script += [tc("book_appointment", {"date": DAY, "time": "10:30", "name": "[Name]", "email": "danish@test.com"}),
-           tc("book_appointment", {"date": DAY, "time": "10:30", "name": "Danish", "email": "danish at test dot com"})]
-r = c.post("/twilio/gather", data={"CallSid": "CA1", "SpeechResult": "10:30, my name is Danish, email danish at test dot com"})
+script += [tc("book_appointment", {"date": DAY, "time": "10:30", "name": "[Name]", "email": "danish@test.com", "purpose": "website design"}),
+           tc("book_appointment", {"date": DAY, "time": "10:30", "name": "Danish", "email": "danish at test dot com", "purpose": "website design"})]
+r = c.post("/twilio/gather", data={"CallSid": "CA1", "SpeechResult": "10:30, my name is Danish, email danish at test dot com, it is about website design"})
 assert "Shall I book it?" in r.text and "10:30 AM" in r.text, r.text
 assert not any(b["name"] in ("Danish", "[Name]") for b in c.get("/api/bookings").json()), "booked without confirmation!"
-script += [tc("book_appointment", {"date": DAY, "time": "10:30", "name": "Danish", "email": "danish at test dot com"})]
+script += [tc("book_appointment", {"date": DAY, "time": "10:30", "name": "Danish", "email": "danish at test dot com", "purpose": "website design"})]
 r = c.post("/twilio/gather", data={"CallSid": "CA1", "SpeechResult": "yes"})
 assert "is booked for" in r.text, r.text
 assert not script, "unused fake LLM replies left"
