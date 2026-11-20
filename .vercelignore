@@ -1,0 +1,17 @@
+.env
+.venv
+.git
+tests
+docs
+data
+tools
+scripts
+*.mp4
+*.db
+service_account*.json
+client_secret*.json
+google_token*.json
+__pycache__
+.hallmark
+requirements-dev.txt
+Dockerfile

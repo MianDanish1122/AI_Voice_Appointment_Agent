@@ -53,6 +53,6 @@ TTS_VOICE = env("TTS_VOICE", "Polly.Joanna-Neural")
 TTS_LANGUAGE = env("TTS_LANGUAGE", "en-US")
 
 KNOWLEDGE_DIR = ROOT / "knowledge"
-DATA_DIR = ROOT / "data"
-DATA_DIR.mkdir(exist_ok=True)
+DATA_DIR = Path("/tmp/voice-agent-data") if os.getenv("VERCEL") else ROOT / "data"     # Vercel's project folder is read-only
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = DATA_DIR / "bookings.db"
