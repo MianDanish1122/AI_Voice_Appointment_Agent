@@ -1,31 +1,34 @@
 # AI Voice Appointment Agent
 
-A voice (and text) receptionist that books real meetings in **Google Calendar**. Built on free tiers only ($0):
+A **voice-call** receptionist that books real meetings in **Google Calendar**. Built on free tiers only ($0):
 Groq / Gemini free LLMs, the browser's speech APIs, free Microsoft neural voices (edge-tts), Google Calendar API, SQLite.
 
-![Voice call: the form fills in as the caller speaks](docs/ui-voice-call.png)
+![Voice call: the booking sheet fills in as the caller speaks](docs/ui-voice-call.png)
 
 ## What it does
 
-- **Talks or types - your choice, or both.** Voice call, typed chat and an editable booking form all write to **one shared
-  booking state** on the server. Fix the email in the form while the agent is talking and the agent uses your value and
-  asks nothing twice. Fill the form by hand and the agent carries on from the next missing item.
+- **Voice only on the page.** You talk; there is no text box and no form to type into. A **read-only booking sheet** fills
+  in live as the agent hears you (date, time, name, email, topic), with a progress track, the availability result, and a
+  cue for what to say next ("say yes to book it"). Everything lives in **one shared booking state** on the server; the
+  same state is also reachable by typed chat and form edits through the API (`/api/web/*`), which the test-suite uses.
 - **Collects:** full name, email, date, time, purpose. Understands "tomorrow at 5 PM... actually the day after tomorrow at
   11", "the 20th", "next Monday", "make it 4", "Sunday?" (closed), "10 PM?" (outside hours) and offers real alternatives.
 - **Email accuracy:** spoken emails ("ahmed khan 92 at gmail dot com", "double two", "underscore", "at the rate") are parsed
   in code, validated, and **never guessed**: an uncertain email (odd domain, typo like `gmial.com`) is read back
-  ("I heard ... Is that correct?" / "Did you mean ...gmail.com?") before use. The form shows it editable with a verify state.
+  ("I heard ... Is that correct?" / "Did you mean ...gmail.com?") before use; you confirm it by voice and the sheet marks it verified.
 - **Safe booking:** name + email + date + time + purpose validated **server-side** (past dates, closed days, >60 days,
   outside hours, busy slots, time zone), live Google Calendar free/busy check, a read-back summary, an explicit "yes"
-  (or the *Confirm booking* button for exactly the summary shown), then the real event is created. **Success is shown only
+  (or the confirm API for exactly the summary shown), then the real event is created. **Success is shown only
   after Google confirms.** Booking is idempotent (deterministic event id, unique slot) so a double click or retry cannot
   create a second event, and a failed calendar call never leaves a half-booking behind.
 - **Human handoff** ("let me talk to a person" -> instant transfer to `HUMAN_PHONE`), knowledge-base answers from `knowledge/`,
   Twilio phone webhooks for a real phone number.
 
-| Voice call | Booked | Phone (dark) |
-|---|---|---|
-| ![](docs/ui-voice-call.png) | ![](docs/ui-booked.png) | ![](docs/ui-phone-dark.png) |
+| Night (default) | Booked | Day drop | Phone |
+|---|---|---|---|
+| ![](docs/ui-voice-call.png) | ![](docs/ui-booked.png) | ![](docs/ui-day.png) | ![](docs/ui-phone-dark.png) |
+
+**Design system** (built with the Hallmark skill): *Lumen*, atmospheric genre, Workbench layout. A hand-built SVG voice dial (needle + arc follow the measured microphone level, callouts show live values only), lowercase Instrument Serif headline with one accent verb, mono UPPERCASE labels, blueprint grid, hairline cards that glow from within. Night Foundry (default) and Day Foundry (light) share one token file, `static/tokens.css`; nothing on the page inlines a colour or font. No invented numbers: every figure on screen (bookings, first-words time, call time, level) is measured.
 
 ## Architecture
 
@@ -106,9 +109,9 @@ URL), and Vapi bills calls against your Vapi credits.
 ## Tests
 
 ```powershell
-.\.venv\Scripts\python -m tests.smoke_test      # 29 offline tests (fake LLM + fake Google), ~10 s
+.\.venv\Scripts\python -m tests.smoke_test      # 30 offline tests (fake LLM + fake Google + design lint), ~10 s
 .\.venv\Scripts\pip install -r requirements-dev.txt
-.\.venv\Scripts\python -m tests.ui_test         # 9 real-Chrome tests of the page + backend (screens in tests/screens/)
+.\.venv\Scripts\python -m tests.ui_test         # 10 real-Chrome tests of the voice page + backend (screens in tests/screens/)
 .\.venv\Scripts\python -m tests.live_e2e_test   # real LLM + REAL Google Calendar: books, verifies, deletes the test event
 .\.venv\Scripts\python -m tests.live_chat_test  # real LLM answers (questions, out-of-scope, Sunday, human)
 ```
@@ -132,5 +135,5 @@ the real backend.
 `app/booking.py` shared state, email recognition + validation · `app/agent.py` conversation + guard rails ·
 `app/main.py` API (web: `/api/web/*`, phone: `/twilio/*`) · `app/llm.py` provider chain + streaming ·
 `app/gcal.py` Google Calendar · `app/calendar_store.py` slots/bookings · `static/index.html` the app UI ·
-`app/vapi.py` optional Vapi webhook + assistant/tool payloads · `tests/` suites · `knowledge/` FAQ ·
+`static/tokens.css` the Lumen design tokens (Night + Day) · `app/vapi.py` optional Vapi webhook + assistant/tool payloads · `tests/` suites · `knowledge/` FAQ ·
 `scripts/google_login.py` optional invite login · `scripts/vapi_setup.py` creates the Vapi assistant.

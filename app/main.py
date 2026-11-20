@@ -6,6 +6,7 @@ from xml.sax.saxutils import escape
 
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import calendar_store, config, gcal, llm, vapi
@@ -17,6 +18,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s
 log = logging.getLogger("main")
 
 app = FastAPI(title="AI Call Agent")
+app.mount("/static", StaticFiles(directory=config.ROOT / "static"), name="static")   # tokens.css for the page
 
 _BG: set = set()
 

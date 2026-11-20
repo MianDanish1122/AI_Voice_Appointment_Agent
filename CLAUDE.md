@@ -16,8 +16,8 @@ Evaluators will try tricky phrases ("tomorrow 5 PM… no, day after at 11", Sund
 ```powershell
 python -m venv .venv ; .\.venv\Scripts\pip install -r requirements.txt ; copy .env.example .env   # fill keys
 .\.venv\Scripts\python -m uvicorn app.main:app --port 8000      # http://localhost:8000 in Chrome/Edge
-.\.venv\Scripts\python -m tests.smoke_test      # 29 offline tests, fake LLM + fake Google. MUST pass before every commit
-.\.venv\Scripts\python -m tests.ui_test         # 9 real-Chrome tests (UI_ONLY=<name part> runs a subset; needs: pip install -r requirements-dev.txt; uses installed Chrome)
+.\.venv\Scripts\python -m tests.smoke_test      # 30 offline tests, fake LLM + fake Google + design lint. MUST pass before every commit
+.\.venv\Scripts\python -m tests.ui_test         # 10 real-Chrome tests of the VOICE-ONLY page (UI_ONLY=<name part> runs a subset; needs: pip install -r requirements-dev.txt; uses installed Chrome)
 .\.venv\Scripts\python -m tests.live_e2e_test   # real LLM + REAL Google Calendar; creates a test event, verifies, deletes it
 .\.venv\Scripts\python -m tests.live_chat_test  # real LLM answers
 ```
@@ -32,7 +32,7 @@ events named "Upgrade Check" / "Profile Probe" in the owner's calendar and delet
 - `app/gcal.py` — Google REST over a shared `httpx.Client`; deterministic event id ⇒ idempotent create (409 ⇒ reuse; cancelled ⇒ restore); service account, or OAuth token ⇒ real invites + Meet.
 - `app/calendar_store.py` — slots + bookings in SQLite (`UNIQUE(start)`), merges Google freeBusy, idempotent for the same name+email.
 - `app/vapi.py` + `scripts/vapi_setup.py` — OPTIONAL Vapi engine (Vapi owns STT/LLM/TTS/phone and calls our webhook `POST /api/vapi/webhook` for tools `update_booking_details` / `check_available_slots` / `book_appointment`). The caller's words arrive in `artifact.messages` / `conversation-update` and go through the same `CallSession._deterministic()` rules; tool results are flat JSON strings with a `say` field the Vapi LLM must read verbatim; the page passes its session id as `variableValues.sid` (+ `/api/vapi/link`). Keys in `.env`: `VAPI_API_KEY` (private, setup script only), `VAPI_PUBLIC_KEY`, `VAPI_ASSISTANT_ID`, `VAPI_WEBHOOK_SECRET`. NOT yet run against a live Vapi call (needs the public URL) and the assistant/tools are NOT created in the owner's Vapi account yet (`python -m scripts.vapi_setup --server-url https://<host>` after deploying). Unverified against Vapi's live API: transcriber/voice ids, tool PATCH shape, `{{"now" | date: ...}}` liquid in the prompt, web SDK `start(id, overrides)` signature and returned call id.
-- `static/index.html` — the whole UI (voice orb visualizer, transcript, editable form, progress stepper, review dialog). `window.__app` is exposed for tests.
+- `static/index.html` + `static/tokens.css` — the whole UI, **voice-only by the owner's request** (no text box, no form, no typing surface; `test_voice_only_there_is_no_typing_surface` enforces it). Built with the Hallmark skill: theme **Lumen** (Night default / Day via `data-drop`), Workbench layout, N9 nav, Ft5 footer, hand-built SVG voice dial (never an orb), read-only live booking sheet, transcript, recent bookings. All colours/fonts come from `tokens.css` and `test_page_design_lint_hallmark_gates` mechanically enforces the Hallmark gates (tokens-only, no italics/blur/100vw, tinted neutrals, spacing scale, nowrap affordances, eyebrow cap, no invented metrics); `.hallmark/log.json` records the pick. The manual/typed backend APIs (`/api/web/state|review|confirm|message`) still exist and are covered by the offline tests, but the page does not use them. `window.__app` is exposed for tests.
 
 ## Rules that matter (don't weaken them — weak/rate-limited models rely on them)
 - Booking needs all five fields valid, a free slot (fresh check), and a clear "yes" to a read-back **in a later turn** for exactly the same state key (any edit resets it). The UI confirm path checks the same key. Success is reported only after the Google call returned.
@@ -40,6 +40,9 @@ events named "Upgrade Check" / "Profile Probe" in the owner's calendar and delet
 - Uncertain voice emails (unusual domain, typo suggestion, very short) are verified out loud first; typed/form emails count as verified.
 - Date errors (closed day, past, >60 days) are spoken by code, not left to the model.
 - Free-tier models often skip tool calls (measured), so everything critical also exists as code.
+
+## Design rules for the page (Hallmark/Lumen)
+- Prose is lowercase, mono labels are the only UPPERCASE; headings are roman (never italic); one accent-coloured verb in the headline; no orb, no glass/blur, no gradient text; every number on screen is measured or live; the 'start call' button must stay above the fold at 1280x800; mobile floor 320/375/414/768 px (no horizontal scroll, clickable text never wraps). Re-run `tests.ui_test` and read the screenshots in `tests/screens/` after any visual change.
 
 ## Learned the hard way
 - **Do not write Python patch scripts through a bash heredoc if they contain backslashes** (`\b`, `\s`, `\n`): the harness mangles them (we got real backspace characters in a regex). Write the script/file with the Write/Edit tools. After scripted edits run a control-character scan.

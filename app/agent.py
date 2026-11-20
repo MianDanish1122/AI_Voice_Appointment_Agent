@@ -470,6 +470,8 @@ class CallSession:
             slot = await asyncio.to_thread(check_slot, st.values["date"], st.values["time"], fresh)
         d = st.public(slot)
         d["call_active"] = self.call_active
+        d["pending_confirm"] = bool(self.pending_key and self.pending_key == st.key())   # a read-back is waiting for "yes"
+        d["email_check"] = self.awaiting                                                   # 'email' | 'email_suggestion' | None
         return d
 
     def _summary_or_none(self) -> str | None:

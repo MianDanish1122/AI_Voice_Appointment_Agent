@@ -610,6 +610,47 @@ def test_vapi_assistant_and_tool_payloads():
     assert "sek" not in prompt and "sek" not in json.dumps(vapi.tool_payloads("https://x/y", None))
 
 
+def test_page_design_lint_hallmark_gates():
+    """The Hallmark slop-test gates that can be checked mechanically, so the design cannot regress silently."""
+    root = Path(config.ROOT) / "static"
+    html = (root / "index.html").read_text(encoding="utf-8")
+    tokens = (root / "tokens.css").read_text(encoding="utf-8")
+    style = re.search(r"<style>(.*?)</style>", html, re.S).group(1)
+    script = re.search(r"<script>(.*)</script>", html, re.S).group(1)
+    code = style + script
+    # 48 · tokens only: no inline colours, every font through a token
+    assert not re.findall(r"#[0-9a-fA-F]{3,8}\b", code), "hex colour outside tokens.css"
+    assert not re.findall(r"\b(?:oklch|rgba?|hsla?)\(", code), "colour function outside tokens.css"
+    fams = re.findall(r"font-family:\s*([^;]+);", style)
+    assert fams and all(f.strip().startswith("var(--font-") for f in fams), fams
+    # 38a · no italics anywhere; the headline's verb landmark renders upright
+    assert "italic" not in code.lower() and re.search(r"\.hero__title em \{[^}]*font-style: normal", style)
+    # glass / blur / bounce / transition-all / viewport-unit traps
+    for bad in ("backdrop-filter", "transition: all", "100vw", "100vh", "cubic-bezier(0.34, 1.56"):
+        assert bad not in code, bad
+    # 34 · both roots clip horizontal overflow; 27 · reduced motion is honoured; focus ring is never animated
+    assert re.search(r"html, body \{ overflow-x: clip; \}", style) and "prefers-reduced-motion: reduce" in style
+    assert ":focus-visible" in style and not re.search(r"transition:[^;]*outline", style)
+    # 22 · tinted neutrals only (>= 0.005 chroma) in both drops
+    for name, c in re.findall(r"(--color-(?:paper|ink|muted|label)[\w-]*):\s*oklch\([\d.]+%\s+([\d.]+)", tokens):
+        assert float(c) >= 0.005, (name, c)
+    # 24 · spacing comes from the named scale (hairlines of 2px and em-relative nudges are the only literals)
+    for prop, val in re.findall(r"\b((?:padding|margin|gap)(?:-[a-z]+)?):\s*([^;}]+)[;}]", style):
+        rest = re.sub(r"(?:var|calc|env|max)\((?:[^()]|\([^()]*\))*\)", "", val).split()
+        assert all(re.fullmatch(r"0|auto|2px|-?[\d.]+em", t) for t in rest), (prop, val)
+    # 25 · prose measure 45-75ch · 49 · clickable text never wraps · 20 · stamp present · eyebrows capped (Lumen: <= 6)
+    assert all(45 <= int(n) <= 75 for n in re.findall(r"\.(?:lede|empty) \{[^}]*max-width: (\d+)ch", style))
+    for sel in (".btn", ".theme", ".wordmark"):
+        assert re.search(re.escape(sel) + r" \{[^}]*white-space: nowrap", style), sel
+    assert "Hallmark · genre: atmospheric · macrostructure: Workbench · theme: lumen" in style
+    assert html.count('class="eyebrow"') <= 6, html.count('class="eyebrow"')
+    # voice-only: there is no way to type a booking on this page
+    assert not re.search(r"<(textarea|form)\b|contenteditable|<input[^>]*type=\"(text|email|search|tel)\"", html)
+    # 46 · honest copy: the page itself invents no figures (every number on it is rendered from live data)
+    visible = re.sub(r"<(script|style)[\s\S]*?</\1>|<[^>]+>", " ", html)
+    assert not re.search(r"\d+\s*(%|x faster|\+)|trusted by|\d{2,3},\d{3}", visible), "invented metric in the markup"
+
+
 def test_deterministic_path_skips_the_llm():
     s = fresh()
     fill_voice(s)

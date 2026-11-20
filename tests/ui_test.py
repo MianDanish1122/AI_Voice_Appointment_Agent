@@ -1,9 +1,9 @@
-"""Browser tests: the real page in real Chrome (Playwright) against the real backend, in-process.
+"""Browser tests: the real voice-only page in real Chrome (Playwright) against the real backend, in-process.
 Only the LLM and Google Calendar are faked (same fakes as tests/smoke_test.py), and the browser's speech APIs are
 mocked because headless Chrome has no microphone / speech service.
 
 One-time dev setup:  .venv\\Scripts\\pip install playwright      (uses your installed Chrome; nothing to download)
-Run:                 .venv\\Scripts\\python -m tests.ui_test
+Run:                 .venv\\Scripts\\python -m tests.ui_test        (UI_ONLY=<part of a test name> runs a subset)
 Screenshots land in tests/screens/ .
 """
 import json
@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 
 from tests import smoke_test as T                       # installs the fake LLM + fixed clock (Mon 2026-11-23 09:00)
-from app import booking, config, gcal                    # noqa: E402
+from app import booking, config                          # noqa: E402
 
 import uvicorn                                           # noqa: E402
 from playwright.sync_api import expect, sync_playwright  # noqa: E402
@@ -42,7 +42,6 @@ INIT = """
 })();
 """
 
-
 FAKE_VAPI_SDK = """
 export default class Vapi {
   constructor(key){ this.key=key; this.h={}; window.__vapi=this; }
@@ -65,7 +64,7 @@ def start_server():
     return server
 
 
-def new_page(browser, width=1440, height=900, scheme="light"):
+def new_page(browser, width=1440, height=900, scheme="dark"):
     ctx = browser.new_context(viewport={"width": width, "height": height}, color_scheme=scheme, permissions=["microphone"])
     CONTEXTS.append(ctx)
     ctx.add_init_script(INIT)
@@ -79,7 +78,7 @@ def new_page(browser, width=1440, height=900, scheme="light"):
     LAST["page"] = page
     booking.clear_slot_cache()
     page.goto(URL)
-    expect(page.locator("#bizline")).to_contain_text("Danish Digital Solutions")
+    expect(page.locator("#wordmark")).to_contain_text(re.compile("danish digital solutions", re.I))
     return page
 
 
@@ -87,8 +86,8 @@ def say(page, text, final=True, wait_listening=True):
     """Pretend the caller spoke (the page's own silence timer then sends it). Like a real caller, wait until the
     agent has finished and the page is listening - speech during 'thinking' is (correctly) ignored."""
     if wait_listening:
-        expect(page.locator("#phase")).to_contain_text("Listening")
-    before = page.locator(".msg.agent").count()
+        expect(page.locator("#phase")).to_contain_text("listening")
+    before = page.locator(".line.agent").count()
     for _ in range(80):
         if page.evaluate("(t) => window.__say(t, %s)" % ("true" if final else "false"), text):
             break
@@ -96,138 +95,109 @@ def say(page, text, final=True, wait_listening=True):
     else:
         raise AssertionError("recognizer never became ready")
     if wait_listening:        # a real caller waits for the answer before speaking again
-        expect(page.locator(".msg.agent")).not_to_have_count(before)
-        expect(page.locator("#phase")).to_contain_text(re.compile("Listening|ended"))
+        expect(page.locator(".line.agent")).not_to_have_count(before)
+        expect(page.locator("#phase")).to_contain_text(re.compile("listening|ended"))
 
 
 def last_agent(page):
-    return page.locator(".msg.agent .body").last
+    return page.locator(".line.agent .text").last
 
 
-def test_form_only_flow(browser):
-    T.fresh(call=False)
+def start_call(page):
+    page.click("#callBtn")
+    expect(page.locator(".line.agent .text").first).to_contain_text("Hello, thank you for calling")
+    expect(page.locator("#callBtnText")).to_have_text("end call")
+
+
+I = re.I
+
+
+def test_voice_call_books_end_to_end(browser):
     config.DB_PATH = Path(tempfile.mkdtemp()) / "a.db"
     page = new_page(browser)
-    assert page.get_attribute("#fDate", "min") == "2026-11-23", "date picker must block past dates"
-    # email validation feedback
-    page.fill("#fEmail", "not-an-email"); page.press("#fEmail", "Enter")
-    expect(page.locator("#msg-email")).to_contain_text("valid email")
-    # past date refused by the server too
-    page.fill("#fDate", "2026-11-12"); page.press("#fDate", "Tab")
-    expect(page.locator("#msg-date")).to_contain_text("passed")
-    # fill everything by hand
-    page.fill("#fName", "Mia Stone"); page.press("#fName", "Enter")
-    page.fill("#fEmail", "Mia@Gmail.com"); page.press("#fEmail", "Enter")
-    expect(page.locator("#msg-email")).to_contain_text("verified")
-    page.fill("#fDate", "2026-11-25"); page.press("#fDate", "Tab")
-    expect(page.locator("#fTime option[value='11:00']")).to_have_count(1)
-    page.select_option("#fTime", "11:00")
-    expect(page.locator("#slotLine")).to_contain_text("is available")
-    page.fill("#fPurpose", "Website redesign"); page.press("#fPurpose", "Tab")
-    expect(page.locator("#reviewBtn")).to_be_enabled()
-    page.screenshot(path=str(SHOTS / "form-ready-desktop-light.png"))
-    page.click("#reviewBtn")
-    expect(page.locator("#reviewDlg")).to_be_visible()
-    expect(page.locator("#dlgDl")).to_contain_text("mia@gmail.com")
-    page.click("#dlgConfirm")
-    expect(page.locator("#success")).to_be_visible()
-    expect(page.locator("#successDl")).to_contain_text("Wednesday, November 25th at 11 AM")
-    rows = T.bookings()
-    assert len(rows) == 1 and rows[0]["email"] == "mia@gmail.com" and rows[0]["name"] == "Mia Stone", rows
-    expect(page.locator("#bookings")).to_contain_text("Mia Stone")
-    page.screenshot(path=str(SHOTS / "booked-desktop-light.png"))
-    assert not page.errors, page.errors
-
-
-def test_voice_call_with_manual_edit_in_the_middle(browser):
-    config.DB_PATH = Path(tempfile.mkdtemp()) / "b.db"
-    page = new_page(browser)
-    page.click("#callBtn")
-    expect(page.locator(".msg.agent .body").first).to_contain_text("Hello, thank you for calling")
-    expect(page.locator("#callBtnText")).to_have_text("End call")
+    start_call(page)
+    expect(page.locator("#apparatus")).to_have_attribute("data-live", "1")
     say(page, "Book a meeting on November 25 at 11 AM")
-    expect(page.locator("#fDate")).to_have_value("2026-11-25")                 # voice fills the form
-    expect(page.locator("#fTime")).to_have_value("11:00")
+    expect(page.locator("#vDate")).to_have_text(re.compile("wednesday, november 25", I))      # the sheet fills as you speak
+    expect(page.locator("#vTime")).to_have_text(re.compile("11 am", I))
+    expect(page.locator("#slotLine")).to_contain_text(re.compile("available", I))
     say(page, "My name is Ahmed Khan")
-    expect(page.locator("#fName")).to_have_value("Ahmed Khan")
+    expect(page.locator("#vName")).to_have_text(re.compile("ahmed khan", I))
     say(page, "my email is ahmed khan 92 at gmail dot com")
-    expect(page.locator("#fEmail")).to_have_value("ahmedkhan92@gmail.com")
-    expect(page.locator("#msg-email")).to_contain_text("Heard by voice")
-    page.screenshot(path=str(SHOTS / "call-voice-filling-desktop-light.png"))
-    # the caller types the last missing item instead of speaking it
-    page.fill("#fPurpose", "Pricing for a new website"); page.press("#fPurpose", "Tab")
-    expect(last_agent(page)).to_contain_text("Just to confirm", timeout=8000)
-    expect(last_agent(page)).to_contain_text("Pricing for a new website")
+    expect(page.locator("#vEmail")).to_have_text("ahmedkhan92@gmail.com")
+    expect(page.locator("#tagEmail")).to_contain_text(re.compile("say yes to confirm", I))
+    page.screenshot(path=str(SHOTS / "lumen-night-call.png"))
+    say(page, "I want to discuss pricing for a new website")
+    expect(last_agent(page)).to_contain_text("Just to confirm")
+    expect(page.locator("#cue")).to_contain_text(re.compile("say .yes. to book", I))          # voice-only: the cue tells you to say yes
     assert T.bookings() == [], "nothing may be booked before the caller says yes"
     say(page, "yes")
-    expect(page.locator("#success")).to_be_visible(timeout=8000)
+    expect(page.locator("#success")).to_be_visible()
     expect(last_agent(page)).to_contain_text("Done!")
+    expect(page.locator("#successDl")).to_contain_text(re.compile("wednesday, november 25th at 11 am", I))
+    expect(page.locator("#vPurpose")).to_have_text(re.compile("pricing for a new website", I))
+    expect(page.locator(".step.is-done")).to_have_count(4)                                    # the progress track completes
     rows = T.bookings()
     assert len(rows) == 1 and rows[0]["email"] == "ahmedkhan92@gmail.com", rows
-    expect(page.locator("#fName")).to_be_hidden()                                # form swapped for the success card
+    expect(page.locator("#statBookings")).to_have_text("1")
+    expect(page.locator("#statFirst")).to_contain_text("s")                                    # a real measured number, not a placeholder
+    expect(page.locator("#bookings")).to_contain_text(re.compile("ahmed khan", I))
+    page.screenshot(path=str(SHOTS / "lumen-night-booked.png"))
     assert not page.errors, page.errors
 
 
-def test_voice_email_then_manual_correction(browser):
-    config.DB_PATH = Path(tempfile.mkdtemp()) / "c.db"
+def test_voice_only_there_is_no_typing_surface(browser):
     page = new_page(browser)
-    page.click("#callBtn")
-    expect(page.locator(".msg.agent .body").first).to_contain_text("Hello")
+    assert page.locator("input[type=text], input[type=email], input[type=search], textarea, form, [contenteditable]").count() == 0
+    assert page.locator("#text, #composer, .try, #fName, #fEmail, #fDate, #fTime, #fPurpose, #reviewBtn").count() == 0
+    # what remains are settings controls, not a way to type the booking
+    assert page.locator("select").count() >= 1 and page.locator("#callBtn").count() == 1
+    page.keyboard.type("hello")                                  # typing on the page does nothing
+    assert page.locator(".line").count() == 0
+
+
+def test_email_is_verified_by_voice(browser):
+    config.DB_PATH = Path(tempfile.mkdtemp()) / "b.db"
+    page = new_page(browser)
+    start_call(page)
     say(page, "Book a meeting on November 25 at 11 AM")
     say(page, "My name is Ahmed Khan")
     say(page, "my email is ahmed at gmial dot com")                              # mis-heard domain
     expect(last_agent(page)).to_contain_text("Did you mean")
-    expect(page.locator("#emailBar")).to_contain_text("ahmed@gmail.com")
-    page.fill("#fEmail", "ahmed.khan@outlook.com"); page.press("#fEmail", "Enter")   # the caller fixes it by hand
-    expect(page.locator("#msg-email")).to_contain_text("verified")
-    expect(page.locator("#fEmail")).to_have_value("ahmed.khan@outlook.com")
-    say(page, "I want to discuss hiring")
-    expect(last_agent(page)).to_contain_text("ahmed dot khan at outlook dot com")      # the agent uses the corrected email
-    say(page, "yes")
-    expect(page.locator("#success")).to_be_visible(timeout=8000)
-    assert T.bookings()[0]["email"] == "ahmed.khan@outlook.com"
+    expect(page.locator("#tagEmail")).to_contain_text(re.compile("say yes for ahmed@gmail.com", I))
+    expect(page.locator("#cue")).to_contain_text(re.compile("say .yes. if the email is right", I))
+    say(page, "yes")                                                             # the corrected spelling is confirmed by voice
+    expect(page.locator("#vEmail")).to_have_text("ahmed@gmail.com")
+    expect(page.locator("#tagEmail")).to_have_text(re.compile("verified", I))
     assert not page.errors, page.errors
 
 
-def test_interruption(browser):
-    config.DB_PATH = Path(tempfile.mkdtemp()) / "d.db"
+def test_changed_mind_updates_the_sheet_live(browser):
+    config.DB_PATH = Path(tempfile.mkdtemp()) / "c.db"
     page = new_page(browser)
-    page.evaluate("window.__speakMs = 6000")                                      # a long-winded agent
-    page.click("#callBtn")
-    expect(page.locator(".msg.agent .body").first).to_contain_text("Hello")
-    expect(page.locator("#phase")).to_contain_text("speaking")
-    page.wait_for_timeout(400)
-    say(page, "wait what are your opening hours please", final=False, wait_listening=False)   # talks over the agent
-    expect(page.locator(".note", has_text="interrupted")).to_be_visible()
-    expect(page.locator("#phase")).to_contain_text("Listening")
-
-
-def test_typed_chat_without_a_call(browser):
-    config.DB_PATH = Path(tempfile.mkdtemp()) / "e.db"
-    page = new_page(browser)
-    page.fill("#text", "Book a meeting on November 25 at 2 PM"); page.press("#text", "Enter")
-    expect(page.locator("#fDate")).to_have_value("2026-11-25")
-    expect(page.locator("#fTime")).to_have_value("14:00")
-    expect(page.locator(".msg.user .body")).to_contain_text("2 PM")
-    page.fill("#text", "my email is sara@gmail.com"); page.press("#text", "Enter")
-    expect(page.locator("#fEmail")).to_have_value("sara@gmail.com")
-    expect(page.locator("#msg-email")).to_contain_text("verified")                  # typed = visible = verified
-    expect(page.locator("#latency")).to_contain_text("Last reply")
+    start_call(page)
+    say(page, "Book a meeting tomorrow at 5 PM... actually, make it the day after tomorrow at 11 AM")
+    expect(page.locator("#vDate")).to_have_text(re.compile("wednesday, november 25", I))
+    expect(page.locator("#vTime")).to_have_text(re.compile("11 am", I))
+    say(page, "actually make it 3 PM")
+    expect(page.locator("#vTime")).to_have_text(re.compile("3 pm", I))
+    expect(last_agent(page)).to_contain_text("Sure, I'll update that")
+    say(page, "Is Saturday okay?")
+    page.wait_for_timeout(300)
     assert not page.errors, page.errors
 
 
-def test_unavailable_slot_offers_alternatives(browser):
+def test_unavailable_slot_shows_alternatives(browser):
     g = T.FakeGoogle(busy=[T.busy_slot("2026-11-25", "11:00")]).install()
     try:
-        config.DB_PATH = Path(tempfile.mkdtemp()) / "f.db"
+        config.DB_PATH = Path(tempfile.mkdtemp()) / "d.db"
         page = new_page(browser)
-        page.fill("#fDate", "2026-11-25"); page.press("#fDate", "Tab")
-        expect(page.locator("#fTime option[value='11:00']")).to_have_count(0)
-        page.fill("#text", "make it 11 AM please"); page.press("#text", "Enter")
-        expect(page.locator("#slotLine")).to_contain_text("not available")
-        expect(page.locator("#alts .pill-btn").first).to_be_visible()
-        page.locator("#alts .pill-btn").first.click()                               # one click picks an open time
-        expect(page.locator("#slotLine")).not_to_contain_text("not available")
+        start_call(page)
+        say(page, "Book a meeting on November 25 at 11 AM")
+        expect(last_agent(page)).to_contain_text("isn't available")
+        expect(page.locator("#slotLine")).to_contain_text(re.compile("not available", I))
+        expect(page.locator("#slotLine")).to_contain_text(re.compile("try .* am", I))      # open times offered, to be said out loud
+        assert T.bookings() == [] and g.events == []
     finally:
         g.uninstall()
 
@@ -235,41 +205,55 @@ def test_unavailable_slot_offers_alternatives(browser):
 def test_google_down_is_reported_not_hidden(browser):
     g = T.FakeGoogle(fail_create=True).install()
     try:
-        config.DB_PATH = Path(tempfile.mkdtemp()) / "g.db"
+        config.DB_PATH = Path(tempfile.mkdtemp()) / "e.db"
         page = new_page(browser)
-        page.fill("#fName", "Mia Stone"); page.press("#fName", "Enter")
-        page.fill("#fEmail", "mia@gmail.com"); page.press("#fEmail", "Enter")
-        page.fill("#fDate", "2026-11-25"); page.press("#fDate", "Tab")
-        expect(page.locator("#fTime option[value='11:00']")).to_have_count(1)
-        page.select_option("#fTime", "11:00")
-        page.fill("#fPurpose", "Branding"); page.press("#fPurpose", "Tab")
-        expect(page.locator("#reviewBtn")).to_be_enabled()
-        page.click("#reviewBtn"); page.click("#dlgConfirm")
-        expect(page.locator(".note.bad")).to_contain_text("Not booked")
+        start_call(page)
+        say(page, "Book a meeting on November 25 at 11 AM")
+        say(page, "My name is Ahmed Khan")
+        say(page, "my email is ahmed at gmail dot com")
+        say(page, "I want to discuss hiring")
+        expect(last_agent(page)).to_contain_text("Just to confirm")
+        say(page, "yes")
+        expect(last_agent(page)).to_contain_text("nothing has been booked")
         expect(page.locator("#success")).to_be_hidden()
         assert T.bookings() == []
     finally:
         g.uninstall()
 
 
-def test_vapi_engine_wires_the_call_and_the_form_follows(browser):
+def test_interruption(browser):
+    config.DB_PATH = Path(tempfile.mkdtemp()) / "f.db"
+    page = new_page(browser)
+    page.evaluate("window.__speakMs = 6000")                                      # a long-winded agent
+    page.click("#callBtn")
+    expect(page.locator(".line.agent .text").first).to_contain_text("Hello")
+    expect(page.locator("#phase")).to_contain_text("speaking")
+    page.wait_for_timeout(400)
+    say(page, "wait what are your opening hours please", final=False, wait_listening=False)   # talks over the agent
+    expect(page.locator(".note", has_text="interrupted")).to_be_visible()
+    expect(page.locator("#phase")).to_contain_text("listening")
+
+
+def test_vapi_engine_wires_the_call_and_the_sheet_follows(browser):
     """Our side of the Vapi integration, end to end: the page starts a Vapi call (SDK mocked) with our session id, Vapi's
-    webhook (posted here exactly as Vapi would) drives the same booking rules, and the form + success card follow live."""
+    webhook (posted here exactly as Vapi would) drives the same booking rules, and the sheet + success card follow live."""
     import httpx
     config.DB_PATH = Path(tempfile.mkdtemp()) / "v.db"
     page = new_page(browser)
     page.route(re.compile(r"https://esm\.sh/@vapi-ai/web.*"),
                lambda r: r.fulfill(status=200, content_type="application/javascript", body=FAKE_VAPI_SDK))
+    page.click(".settings summary")
     expect(page.locator("#engineRow")).to_be_visible()
     page.select_option("#engine", "vapi")
     expect(page.locator("#voiceRow")).to_be_hidden()
+    expect(page.locator("#coEngine")).to_have_text("vapi")
     page.click("#callBtn")
     page.wait_for_function("window.__vapiStart")
     start = page.evaluate("window.__vapiStart")
     assert start["key"] == "pk_test" and start["id"] == "asst_test", start
     sid = start["ov"]["variableValues"]["sid"]
     assert sid.startswith("web-"), start
-    expect(page.locator("#phase")).to_contain_text("Connected")
+    expect(page.locator("#phase")).to_contain_text("connected")
 
     def vapi_tool(name, messages, args=None):
         body = {"message": {"type": "tool-calls", "call": {"id": "call-xyz", "type": "webCall"}, "artifact": {"messages": messages},
@@ -284,44 +268,67 @@ def test_vapi_engine_wires_the_call_and_the_form_follows(browser):
                                      "my email is ahmed at gmail dot com, I want to discuss hiring"}
     out = vapi_tool("update_booking_details", [hello, u1])
     assert out["say"].startswith("Just to confirm"), out
-    expect(page.locator("#fDate")).to_have_value("2026-11-25")                  # the webhook filled the form...
-    expect(page.locator("#fTime")).to_have_value("11:00")
-    expect(page.locator("#fName")).to_have_value("Ahmed Khan")
-    expect(page.locator("#fEmail")).to_have_value("ahmed@gmail.com")
-    expect(page.locator("#fPurpose")).to_have_value("hiring")                   # ...and the page showed it without a reload
+    expect(page.locator("#vDate")).to_have_text(re.compile("wednesday, november 25", I))      # the webhook filled the sheet...
+    expect(page.locator("#vTime")).to_have_text(re.compile("11 am", I))
+    expect(page.locator("#vName")).to_have_text(re.compile("ahmed khan", I))
+    expect(page.locator("#vEmail")).to_have_text("ahmed@gmail.com")
+    expect(page.locator("#vPurpose")).to_have_text(re.compile("hiring", I))                    # ...and the page showed it without a reload
+    expect(page.locator("#cue")).to_contain_text(re.compile("say .yes. to book", I))
     page.evaluate("window.__vapi.emit('message', {type:'transcript', role:'user', transcriptType:'final', transcript:'book it please'})")
-    expect(page.locator(".msg.user .body")).to_contain_text("book it please")
+    expect(page.locator(".line.user .text")).to_contain_text("book it please")
     assert T.bookings() == [], "nothing may be booked before the caller says yes"
     out = vapi_tool("book_appointment", [hello, u1, {"role": "assistant", "message": out["say"]}, {"role": "user", "message": "yes"}])
     assert out["success"] is True and out["say"].startswith("Done!"), out
     expect(page.locator("#success")).to_be_visible()
     assert len(T.bookings()) == 1
-    page.screenshot(path=str(SHOTS / "vapi-booked-desktop.png"))
     page.click("#callBtn")                                                       # End call
     page.wait_for_function("window.__vapiStopped")
-    expect(page.locator("#callBtnText")).to_have_text("Start call")
+    expect(page.locator("#callBtnText")).to_have_text("start call")
     assert not page.errors, page.errors
 
 
-def test_looks_right_on_phone_and_dark(browser):
-    config.DB_PATH = Path(tempfile.mkdtemp()) / "h.db"
-    page = new_page(browser, 390, 844, "dark")
-    page.fill("#text", "Book a meeting on November 25 at 11 AM"); page.press("#text", "Enter")
-    expect(page.locator("#fDate")).to_have_value("2026-11-25")
-    width = page.evaluate("document.documentElement.scrollWidth")
-    assert width <= 392, f"horizontal scroll on a phone: {width}px"
-    page.screenshot(path=str(SHOTS / "phone-dark.png"), full_page=True)
-    page2 = new_page(browser, 1440, 900, "dark")
-    page2.fill("#text", "What services do you offer?"); page2.press("#text", "Enter")
-    expect(page2.locator(".msg.agent")).to_have_count(1)
-    page2.screenshot(path=str(SHOTS / "desktop-dark.png"))
+def test_primary_action_is_above_the_fold_on_a_laptop(browser):
+    """Hallmark gate 44: on a 13-inch laptop (1280x800) the headline and the 'start call' button are visible without scrolling."""
+    page = new_page(browser, 1280, 800, "dark")
+    for sel in ("#h1", "#callBtn"):
+        box = page.locator(sel).bounding_box()
+        assert box and box["y"] + box["height"] <= 800, f"{sel} is below the fold: {box}"
+    page.screenshot(path=str(SHOTS / "lumen-night-laptop-fold.png"))
+
+
+def test_night_and_day_drops_and_responsive_floor(browser):
+    config.DB_PATH = Path(tempfile.mkdtemp()) / "g.db"
+    # night is the default for a dark OS, day for a light one; the toggle flips and remembers
+    night = new_page(browser, 1440, 900, "dark")
+    assert night.evaluate("document.documentElement.dataset.drop") == "night"
+    night.screenshot(path=str(SHOTS / "lumen-night-desktop.png"))
+    night.click("#themeBtn")
+    assert night.evaluate("document.documentElement.dataset.drop") == "day"
+    day = new_page(browser, 1440, 900, "light")
+    assert day.evaluate("document.documentElement.dataset.drop") == "day"
+    day.wait_for_timeout(500)
+    day.screenshot(path=str(SHOTS / "lumen-day-desktop.png"))
+    # the mobile floor: 320 / 375 / 414 / 768 - no horizontal scroll, no clickable text wrapping to two lines
+    for w, h in ((320, 640), (375, 812), (414, 896), (768, 1024)):
+        p = new_page(browser, w, h, "dark")
+        p.wait_for_timeout(200)
+        scroll = p.evaluate("[document.documentElement.scrollWidth, window.innerWidth, document.body.scrollWidth]")
+        assert scroll[0] <= scroll[1] + 1 and scroll[2] <= scroll[1] + 1, f"horizontal scroll at {w}px: {scroll}"
+        lines = p.evaluate("""() => ['#callBtnText', '#micBtnText', '#themeLabel', '.settings summary', '#wordmark'].map(s => {
+            const e = document.querySelector(s), r = document.createRange(); r.selectNodeContents(e);
+            return [s, new Set([...r.getClientRects()].map(x => Math.round(x.top))).size];
+        })""")
+        assert all(n <= 1 for _, n in lines), f"clickable text wraps at {w}px: {lines}"
+        if w == 375:
+            p.screenshot(path=str(SHOTS / "lumen-night-phone.png"), full_page=True)
+    assert not night.errors, night.errors
 
 
 def main():
     server = start_server()
     expect.set_options(timeout=15000)       # generous: CI boxes and old laptops are slow with Chrome + server together
     tests = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]
-    only = os.environ.get("UI_ONLY")                    # e.g. set UI_ONLY=voice_email to run matching tests only
+    only = os.environ.get("UI_ONLY")
     if only:
         tests = [(n, f) for n, f in tests if only in n]
     failed = 0
@@ -330,23 +337,16 @@ def main():
                                     args=["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream"])
         for name, fn in tests:
             try:
-                try:
-                    fn(browser)
-                finally:
-                    pass
+                fn(browser)
                 print(f"  PASS  {name}")
             except Exception as e:
                 failed += 1
-                print(f"  FAIL  {name}: {str(e)[:300]}")
+                print(f"  FAIL  {name}: {str(e)[:400]}")
                 try:                                    # what the user (and the server) saw when it failed
                     pg = LAST["page"]
-                    print("        chat:", " | ".join(pg.inner_text("#log").splitlines())[-700:])
-                    print("        phase:", pg.inner_text("#phase"), "| fields:", pg.evaluate(
+                    print("        transcript:", " | ".join(pg.inner_text("#log").splitlines())[-600:])
+                    print("        phase:", pg.inner_text("#phase"), "| sheet:", pg.evaluate(
                         "JSON.stringify(window.__app.S.state && window.__app.S.state.values)"))
-                    from app.agent import SESSIONS
-                    for sid, sess in SESSIONS.items():
-                        print("        server", sid, "pending:", bool(sess.pending_key), "awaiting:", sess.awaiting,
-                              "booked:", bool(sess.booking.booked), "email_status:", sess.booking.email_status)
                 except Exception:
                     pass
             for ctx in CONTEXTS:                         # free the pages of this test before the next one starts
