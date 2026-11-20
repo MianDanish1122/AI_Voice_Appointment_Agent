@@ -2,59 +2,60 @@
 
 The owner speaks Roman Urdu / Hindi mixed with English; reply in the same style, short and practical.
 **Never commit or print secrets** (`.env`, `service_account.json`, `client_secret.json`, `google_token.json`). The repo is PUBLIC.
+Push to GitHub only when the owner asks. Remote: `https://github.com/MianDanish1122/AI_Voice_Appointment_Agent` — the machine's
+default git login is a different account, so push with `https://MianDanish1122@github.com/...`.
 
 ## What this is
-A **$0 (free-tier only) AI voice appointment agent**, built for a 48-hour job assessment:
-- Caller talks to a receptionist ("Danish Solution" at "Danish Digital Solutions") by **web call** (Chrome mic) or **phone** (Twilio trial webhook).
-- Agent answers from `knowledge/` (company FAQ), checks free slots, collects **full name + email + purpose**, reads details back, and on "yes" books a **Google Calendar** event. It can transfer to a human (`HUMAN_PHONE`) or end the call.
-- Assessment deliverables: **live demo link / number**, **2–3 min screen recording** (call + event appearing in Google Calendar + architecture walkthrough), **3–4 bullet architecture summary** (README has it). Evaluators will test with tricky phrases ("tomorrow 5 PM… no, day after at 11", Sunday, 10 PM, spelled emails).
+A **$0 (free-tier only) AI voice appointment agent** for a 48-hour job assessment. Caller talks (web call in Chrome/Edge, or Twilio phone)
+or types, or fills a form — all three edit ONE shared booking state. The agent collects date, time, full name, email, purpose,
+reads them back, and on an explicit "yes" (or the Confirm button) creates a real **Google Calendar** event. Deliverables the owner still
+has to produce: a **live public link**, a **2–3 min screen recording**, a 3–4 bullet architecture summary (README has it).
+Evaluators will try tricky phrases ("tomorrow 5 PM… no, day after at 11", Sunday, 10 PM, spelled emails).
 
-## Run it
+## Run / test
 ```powershell
-python -m venv .venv ; .\.venv\Scripts\pip install -r requirements.txt
-copy .env.example .env      # then fill keys (see below)
-.\.venv\Scripts\python -m uvicorn app.main:app --port 8000     # open http://localhost:8000 in Chrome/Edge
+python -m venv .venv ; .\.venv\Scripts\pip install -r requirements.txt ; copy .env.example .env   # fill keys
+.\.venv\Scripts\python -m uvicorn app.main:app --port 8000      # http://localhost:8000 in Chrome/Edge
+.\.venv\Scripts\python -m tests.smoke_test      # 25 offline tests, fake LLM + fake Google. MUST pass before every commit
+.\.venv\Scripts\python -m tests.ui_test         # 8 real-Chrome tests (needs: pip install -r requirements-dev.txt; uses installed Chrome)
+.\.venv\Scripts\python -m tests.live_e2e_test   # real LLM + REAL Google Calendar; creates a test event, verifies, deletes it
+.\.venv\Scripts\python -m tests.live_chat_test  # real LLM answers
 ```
-Tests (run from repo root):
-- `python -m tests.smoke_test` — offline, fake LLM, **never touches real Google** (it blanks `GOOGLE_CALENDAR_ID`). Must pass before every commit.
-- `python -m tests.live_chat_test` — real LLM conversation (burns free-tier tokens; Google off).
-- `python -m tests.gcal_live_test` — real Google Calendar: creates a test event then deletes it.
-Do NOT run several live tests back-to-back: Groq/Gemini free limits are hit quickly and fallbacks answer worse.
+Live tests burn free-tier tokens and touch the real calendar: do not loop them. If a live test dies mid-way, look for leftover
+events named "Upgrade Check" / "Profile Probe" in the owner's calendar and delete them. Offline tests blank `GOOGLE_CALENDAR_ID`.
 
-## Config (`.env`, see `.env.example`)
-`LLM_BASE_URL/LLM_API_KEY/LLM_MODEL` (Groq, default `openai/gpt-oss-120b`; old llama-3.3 is gone), `GEMINI_API_KEY` (extra free provider),
-`GOOGLE_CALENDAR_ID` + `service_account.json` (service account shared on the calendar with "Make changes to events"),
-`BUSINESS_NAME`, `AGENT_NAME`, `TIMEZONE=Asia/Karachi`, `WORK_DAYS`, `OPEN_TIME/CLOSE_TIME/SLOT_MINUTES`, `HUMAN_PHONE`,
-`TTS_VOICE` (Twilio), `WEB_TTS_VOICE` (edge-tts), optional `GOOGLE_OAUTH_TOKEN_*` (invites).
-Keys were pasted into a chat earlier → **rotate Groq + Gemini keys after submission**.
+## Architecture (see README for the diagram)
+- `app/booking.py` — shared `BookingState` (per session), email extraction/validation/confidence (`extract_email`, `check_email`), name/purpose/slot validators (`check_slot`), spoken helpers.
+- `app/agent.py` — `CallSession.respond()`: (1) `_deterministic()` handles in code, with no LLM: yes/no to read-backs, human handoff, dates/times/emails/names/purpose from the caller's words (incl. answers to the question just asked), real availability, acknowledge-and-ask-next; (2) otherwise the LLM (tools: `check_available_slots`, `update_booking_details`, `book_appointment`, `transfer_to_human`, `end_call`) with the BOOKING STATE + KB + "SLOTS CHECKED" injected; streamed sentence by sentence via `_SentenceStream`. `apply_manual()` = form edits. `_finalize_sync()` is the ONLY place that books.
+- `app/main.py` — web API `/api/web/{start,stream,message,state,review,confirm,reset,end}`, `/api/config`, `/api/tts`, `/api/bookings`, phone `/twilio/*`. Use `spawn()` for fire-and-forget tasks (strong refs!).
+- `app/llm.py` — provider chain Groq `openai/gpt-oss-120b` → Gemini 2.5 Flash → smaller Groq models; 429 cooldown; empty answer = failure; SSE streaming; shared HTTP client + warm-up.
+- `app/gcal.py` — Google REST over a shared `httpx.Client`; deterministic event id ⇒ idempotent create (409 ⇒ reuse; cancelled ⇒ restore); service account, or OAuth token ⇒ real invites + Meet.
+- `app/calendar_store.py` — slots + bookings in SQLite (`UNIQUE(start)`), merges Google freeBusy, idempotent for the same name+email.
+- `static/index.html` — the whole UI (voice orb visualizer, transcript, editable form, progress stepper, review dialog). `window.__app` is exposed for tests.
 
-## Code map
-- `app/main.py` — FastAPI: Twilio webhooks (`/twilio/voice|gather|noinput|status`), browser API (`/api/web/start|message`), `/api/tts` (edge-tts, cached, greeting pre-warmed), `/api/bookings`, `/api/slots/{date}`, `/api/kb/reload`, serves `static/index.html`.
-- `app/agent.py` — the brain: system prompt, tools (`check_available_slots`, `book_appointment`, `transfer_to_human`, `end_call`), per-call `CallSession`, and **guard rails in code** (see below).
-- `app/calendar_store.py` — slots + bookings (SQLite `data/bookings.db`), merges Google `freeBusy`; refuses past / closed / >60-day dates; fixes stale model years.
-- `app/gcal.py` — Google Calendar REST (service account, or OAuth token if present → real invites + Meet link).
-- `app/llm.py` — OpenAI-compatible client; provider chain **Groq main → Gemini → Groq small models**; 429 puts a model on cooldown; an empty answer counts as failure.
-- `app/kb.py` — loads `knowledge/*.md|txt`; whole KB is sent if small, else BM25.
-- `static/index.html` — two-column UI (orb + call controls + voice choice left; transcript + bookings right). Browser STT (continuous, 1.3 s silence), echo filter, barge-in, neural voice with speed probe → falls back to browser voice.
-- `scripts/google_login.py` — one-time OAuth sign-in (needs `client_secret.json`) so the agent can email real calendar invites.
+## Rules that matter (don't weaken them — weak/rate-limited models rely on them)
+- Booking needs all five fields valid, a free slot (fresh check), and a clear "yes" to a read-back **in a later turn** for exactly the same state key (any edit resets it). The UI confirm path checks the same key. Success is reported only after the Google call returned.
+- The LLM may not invent name/email/purpose: values must appear in what the caller said/typed (`_mentioned`). Date/time come from code when the caller named them (last mention wins). Manual (form) edits are not overwritten by stale voice guesses.
+- Uncertain voice emails (unusual domain, typo suggestion, very short) are verified out loud first; typed/form emails count as verified.
+- Date errors (closed day, past, >60 days) are spoken by code, not left to the model.
+- Free-tier models often skip tool calls (measured), so everything critical also exists as code.
 
-## Guard rails implemented in code (don't weaken; the fallback models need them)
-- Booking needs **name, email, purpose that the caller actually said** (checked against caller text); placeholders ([Name], John Doe, example.com) rejected.
-- **Two-step confirm**: first `book_appointment` call only makes the system read back date/time/name/purpose/email; booking happens only after a clear "yes" next turn (`_confirmed`).
-- `end_call` only if caller said goodbye; `transfer_to_human` turns into hang-up on a plain goodbye.
-- Spoken emails ("ahmed at gmail dot com") normalised; times spoken as "3 PM"; replies cleaned for TTS (`_clean`).
-- Date handling in code: `_extract_date` ("the 20th", "20 November", "Dec 3rd") → `_slots_note` looks up slots **before** the LLM and injects them; `date_fallback` is a ready-made spoken answer used if every model fails/returns empty.
+## Learned the hard way
+- **Do not write Python patch scripts through a bash heredoc if they contain backslashes** (`\b`, `\s`, `\n`): the harness mangles them (we got real backspace characters in a regex). Write the script/file with the Write/Edit tools. After scripted edits run a control-character scan.
+- `asyncio.create_task()` without a stored reference can be garbage-collected mid-flight (a stream never finished) → use `spawn()`.
+- Headless Chrome has no microphone/speech: `tests/ui_test.py` mocks the speech APIs; the mock must wait for the page to be in "Listening" like a real caller.
+- Google `events.insert` takes ~1.4 s by itself, so the agent says "One moment while I book that." first.
 
-## Status (end of last session)
-Working & tested: web call flow, booking → real Google Calendar event (tested live), email/purpose rules, past/closed-day handling, LLM fallback chain, two-column UI, GitHub repo.
-**Not yet verified / open items**
-1. **No public live link yet** (most important). Plan: deploy this repo (Dockerfile present) to Hugging Face Spaces / Render / Vercel with env secrets; `GOOGLE_SERVICE_ACCOUNT_JSON` holds the key text. Then point Twilio webhook to `<url>/twilio/voice`. Twilio trial can only call verified numbers → web link is the safe deliverable. A competitor's demo uses **Vapi** (managed voice platform, free trial credits) — allowed by the assessment; consider it only if this stack's voice quality is not good enough.
-2. Last change set (date prefetch + empty-answer fallback in `app/agent.py`, `app/llm.py`) passed `smoke_test` but the **real-LLM re-test of "meeting on the 20th" was interrupted** — re-run `tests.live_chat_test`/a few date phrasings once rate limits reset.
-3. Browser behaviour (echo filter, barge-in, voice quality) is unverified by automated tests — needs a human with headphones in Chrome/Edge. Neural edge-tts takes 5–13 s on the owner's network, so the page auto-selects the browser voice (Edge's "Natural/Online" voices are best).
-4. Calendar **invites to the caller's email** need the OAuth step (`client_secret.json` → `python -m scripts.google_login`); until then the email is only written in the event description.
-5. Groq/Gemini free limits: a burst of calls can exhaust them (Groq main model was rate-limited for minutes after testing). `gemini-2.5-flash-lite` sometimes returns empty after a tool call (handled by falling through). Consider shrinking the prompt/tool tokens if this bites.
-6. Screen recording + final hosting are the owner's tasks; keep README's architecture summary accurate.
+## Status / open items
+Done & verified (offline 25/25, real-Chrome 8/8, live E2E with real Groq/Gemini + real Google Calendar): everything in README "What it does".
+Still open:
+1. **No public live link yet** (most important). Deploy this repo (Dockerfile present) to Hugging Face Spaces / Render with the `.env` values as secrets (`GOOGLE_SERVICE_ACCOUNT_JSON` = key text). Point the Twilio webhook at `<url>/twilio/voice` (trial: verified numbers only; the web link is the safe deliverable).
+2. Real microphone behaviour (echo filter, barge-in, email n-best re-ranking, neural voice quality) is only verified with a mocked recognizer — needs a human with headphones in Chrome/Edge.
+3. Calendar **invites to the caller's email** need the OAuth step (`client_secret.json` → `python -m scripts.google_login`); until then the email is only in the event description.
+4. Groq/Gemini free limits can still bite during a burst of tests/calls (fallbacks + code paths keep the booking flow correct, but LLM-answered turns get slower/weaker).
+5. Screen recording + hosting are the owner's tasks. Rotate the Groq and Gemini keys (they were pasted in chat) after submission.
+6. Competitor demo (https://ai-voice-appointment-agent.vercel.app) uses Vapi (managed voice platform with free trial credits; allowed by the assessment). Only consider it if this stack's voice quality isn't good enough; never probe its backend.
 
 ## Conventions
-- Keep replies of the agent to 1–3 short sentences, English only, ending with a question.
-- Commit messages end with the Co-Authored-By line your harness specifies; push only when the owner asks. Remote: `https://github.com/MianDanish1122/AI_Voice_Appointment_Agent` (owner's GitHub account is `MianDanish1122`; the machine's default git login is a different account, so pushes use `https://MianDanish1122@github.com/...`).
+- Agent replies: 1–3 short sentences, English only, end with one question, times spoken as "3 PM".
+- Commit messages end with the Co-Authored-By line the harness specifies.

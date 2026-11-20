@@ -1,123 +1,116 @@
-# AI Voice Appointment Agent ($0, free-tier tools only)
+# AI Voice Appointment Agent
 
-A voice agent that answers a call (web call link or phone number), talks naturally, collects
-**full name, email, date and time**, confirms the details, and books the meeting in **Google Calendar**
-(checking availability first, so it never double-books).
+A voice (and text) receptionist that books real meetings in **Google Calendar**. Built on free tiers only ($0):
+Groq / Gemini free LLMs, the browser's speech APIs, free Microsoft neural voices (edge-tts), Google Calendar API, SQLite.
+
+![Voice call: the form fills in as the caller speaks](docs/ui-voice-call.png)
+
+## What it does
+
+- **Talks or types - your choice, or both.** Voice call, typed chat and an editable booking form all write to **one shared
+  booking state** on the server. Fix the email in the form while the agent is talking and the agent uses your value and
+  asks nothing twice. Fill the form by hand and the agent carries on from the next missing item.
+- **Collects:** full name, email, date, time, purpose. Understands "tomorrow at 5 PM... actually the day after tomorrow at
+  11", "the 20th", "next Monday", "make it 4", "Sunday?" (closed), "10 PM?" (outside hours) and offers real alternatives.
+- **Email accuracy:** spoken emails ("ahmed khan 92 at gmail dot com", "double two", "underscore", "at the rate") are parsed
+  in code, validated, and **never guessed**: an uncertain email (odd domain, typo like `gmial.com`) is read back
+  ("I heard ... Is that correct?" / "Did you mean ...gmail.com?") before use. The form shows it editable with a verify state.
+- **Safe booking:** name + email + date + time + purpose validated **server-side** (past dates, closed days, >60 days,
+  outside hours, busy slots, time zone), live Google Calendar free/busy check, a read-back summary, an explicit "yes"
+  (or the *Confirm booking* button for exactly the summary shown), then the real event is created. **Success is shown only
+  after Google confirms.** Booking is idempotent (deterministic event id, unique slot) so a double click or retry cannot
+  create a second event, and a failed calendar call never leaves a half-booking behind.
+- **Human handoff** ("let me talk to a person" -> instant transfer to `HUMAN_PHONE`), knowledge-base answers from `knowledge/`,
+  Twilio phone webhooks for a real phone number.
+
+| Voice call | Booked | Phone (dark) |
+|---|---|---|
+| ![](docs/ui-voice-call.png) | ![](docs/ui-booked.png) | ![](docs/ui-phone-dark.png) |
 
 ## Architecture
 
 ```
-Caller ──web call (Chrome mic)──┐                         ┌─► Groq LLM (gpt-oss-120b, free) ─► fallbacks:
-       ──phone (Twilio trial)───┤                         │     gpt-oss-20b / qwen / Gemini (free)
-                                ▼                         │
-                     FastAPI server (this repo) ──────────┤─► knowledge/ (company FAQ, local BM25 search)
-                     speech ⇄ text, agent logic           │
-                                                          └─► Google Calendar API
-                                                                freeBusy (availability) + events.insert
+Browser (Chrome/Edge)                         FastAPI server                        Free services
+ ├ mic -> Web Speech API (STT, n-best    ┐     ├ app/agent.py   CallSession          ├ Groq  gpt-oss-120b  (main LLM)
+ │        re-ranking for emails)         │     │   ├ rules: dates/times/emails/      ├ Gemini 2.5 Flash    (fallback)
+ ├ typed chat ───────────────────────────┼────►│   │   names/purpose/yes-no/handoff  ├ Groq small models   (fallback)
+ ├ editable form (name/email/date/time) ─┘     │   ├ LLM: questions + small talk     ├ Google Calendar API (freeBusy+events)
+ ├ voice visualizer, transcript, progress      │   └ guard rails before every booking├ edge-tts neural voice (+browser voice)
+ └ streams reply sentence by sentence ◄────────┤ app/booking.py  shared BookingState └ SQLite (data/bookings.db)
+                                               │ app/calendar_store.py  slots+bookings
+ Phone (Twilio) ──► /twilio/* webhooks ────────┘ app/llm.py  streaming + fallback chain
 ```
 
-- **Voice in/out:** web call uses the browser's speech recognition (continuous, waits for the caller to finish,
-  supports interrupting the agent) and a free Microsoft neural voice (edge-tts) for replies. Phone calls use
-  Twilio `<Gather input="speech">` + neural `<Say>`.
-- **Brain:** each caller sentence goes to the LLM with tools `check_available_slots`, `book_appointment`,
-  `transfer_to_human`, `end_call`. Relative dates ("tomorrow at 3 PM", "next Monday") are resolved against
-  today's date in the configured time zone; date changes mid-call restart the slot check.
-- **Guard rails in code (not just the prompt):** past/closed/too-far dates refused; name and email must have
-  been said by the caller (no invented data); spoken emails ("ahmed at gmail dot com") normalised; booking only
-  after the system reads back date, time, name and email and the caller says yes; call ends only on goodbye.
-- **Calendar:** `freeBusy` hides busy slots, then `events.insert` creates the event (Asia/Karachi time zone)
-  with name, email, phone and purpose. Optional owner sign-in (`scripts/google_login.py`) sends a real
-  invite to the caller's email with a Google Meet link.
+**Design rule: the LLM talks, code decides.** Free-tier models are fast but unreliable at calling tools (we measured Groq
+models skipping them), so dates, times, emails, names, purpose, yes/no and handoff are also extracted **in code**. The LLM
+handles open questions, and a ready-made spoken answer exists for every dead end, so a rate-limited or weak model cannot
+cause a wrong booking.
 
-Below are the setup notes (Roman Urdu).
+## Latency (measured, not claimed)
 
-## 1. Setup (ek dafa)
+Server-side time to the first spoken sentence, live against Groq/Gemini + Google Calendar from a slow home connection:
+
+| Turn | Before | Now |
+|---|---|---|
+| "book on Nov 23 at 3 PM" (with real availability check) | 1.8 s | **0.4 s** |
+| giving name / email / purpose | 2.2-3.7 s | **< 0.05 s** (no LLM) |
+| read-back summary | 0.4 s | 0.4 s |
+| "yes" -> booking | 1.7 s | speaks in **< 0.05 s** ("One moment while I book that."), confirmation after Google answers (~2 s: Google's `events.insert` alone takes ~1.4 s) |
+| open question answered by the LLM | 1.4-2.1 s | 1.1-1.6 s (first-token time of the model is the floor) |
+
+What made it faster: no LLM round trip for data turns, one shared HTTPS connection per provider (warmed at start-up),
+shorter prompt, Google token/connection warm-up, a deterministic Google event id, no redundant availability calls.
+Honest notes: LLM output **is** streamed sentence by sentence (Groq and Gemini support SSE), but Groq generates a whole short
+answer within ~100 ms of the first token, so streaming adds little there; speech recognition (browser) and voice playback are
+separate stages and add their own time. The neural voice (edge-tts) is slow on some networks, so the page measures it at
+load and falls back to the instant browser voice; Edge's built-in "Natural" voices are the best option.
+
+## Run it
 
 ```powershell
-cd "d:\AI Voice"
 python -m venv .venv
 .\.venv\Scripts\pip install -r requirements.txt
-copy .env.example .env
+copy .env.example .env            # fill LLM_API_KEY (Groq, free), GEMINI_API_KEY (optional), GOOGLE_CALENDAR_ID
+.\.venv\Scripts\python -m uvicorn app.main:app --port 8000      # open http://localhost:8000 in Chrome or Edge
 ```
 
-**Free LLM key:** https://console.groq.com/keys par sign up karo → key banao → `.env` mein `LLM_API_KEY=` par paste karo.
-(Ya Gemini free key: https://aistudio.google.com/apikey — ya Ollama bilkul local, `.env.example` mein options hain.)
+**Google Calendar (free):** create a service account in Google Cloud, enable the Calendar API, save its key as
+`service_account.json`, share your calendar with the service account email ("Make changes to events"), put the calendar
+id in `.env`. To also email real invites with a Meet link: `python -m scripts.google_login` (needs an OAuth desktop
+`client_secret.json`; a service account cannot invite attendees on a personal Gmail calendar).
 
-`.env` mein apna business name, timings, `HUMAN_PHONE` set karo.
+**Knowledge base:** put `.md`/`.txt` files in `knowledge/`. **Phone:** point a Twilio number's voice webhook at
+`https://<your-host>/twilio/voice` (trial accounts can only call verified numbers - the web link is the safe demo).
+**Deploy:** the `Dockerfile` works on Hugging Face Spaces / Render; put the `.env` values (and the service-account JSON text
+as `GOOGLE_SERVICE_ACCOUNT_JSON`) in the host's secrets. Use Groq/Gemini there (no local models).
 
-## 2. Knowledge base
-
-`knowledge/` folder mein `.md` ya `.txt` files daalo (services, prices, FAQ, policies).
-Sample file `knowledge/company_info.md` ko apni real info se replace karo.
-Server chalte hue file badli ho to: `POST http://localhost:8000/api/kb/reload` (ya server restart).
-
-## 3. Run
+## Tests
 
 ```powershell
-.\.venv\Scripts\python -m uvicorn app.main:app --port 8000
+.\.venv\Scripts\python -m tests.smoke_test      # 25 offline tests (fake LLM + fake Google), ~10 s
+.\.venv\Scripts\pip install -r requirements-dev.txt
+.\.venv\Scripts\python -m tests.ui_test         # 8 real-Chrome tests of the page + backend (screens in tests/screens/)
+.\.venv\Scripts\python -m tests.live_e2e_test   # real LLM + REAL Google Calendar: books, verifies, deletes the test event
+.\.venv\Scripts\python -m tests.live_chat_test  # real LLM answers (questions, out-of-scope, Sunday, human)
 ```
 
-## 4. Browser mein test (bilkul free, bina phone ke)
+Covered: correctly spoken email, mis-recognised email, uncertain domain, manually entered email, voice -> manual
+correction, manual -> voice continuation, slow/streamed replies, interruption, changed time ("make it the day after
+tomorrow at 11"), past date, closed day, >60 days, outside hours, busy slot with alternatives, successful booking, duplicate
+confirm, other caller wanting a taken slot, failed Google call (create + free/busy), stale confirmation key, phone flow.
+The browser tests mock the browser's speech APIs (headless Chrome has no microphone); everything else is the real page and
+the real backend.
 
-Chrome / Edge mein kholo: http://localhost:8000 → **Start call** → mic allow karo → baat karo.
-Try karo: *"What services do you offer?"*, *"Book a meeting tomorrow at 3 PM"*, *"I want to talk to a human"*.
-Bookings neeche table mein dikhti hain.
+## Known limits
 
-## 5. Real phone call (Twilio free trial)
-
-1. https://www.twilio.com/try-twilio par free account (trial credit milta hai, card nahi chahiye) → ek free trial number lo.
-2. Server ko internet par expose karo (free, account nahi chahiye):
-   - Cloudflared download: https://github.com/cloudflare/cloudflared/releases (`cloudflared-windows-amd64.exe`)
-   - `cloudflared-windows-amd64.exe tunnel --url http://localhost:8000`
-   - Ye ek URL dega jaise `https://xyz.trycloudflare.com`
-3. Twilio Console → Phone Numbers → apna number → **Voice Configuration**:
-   - *A call comes in*: Webhook → `https://xyz.trycloudflare.com/twilio/voice` (HTTP POST)
-   - *Call status changes*: `https://xyz.trycloudflare.com/twilio/status`
-4. Ab us number par call karo. 🎉
-
-**Trial ki limits:** sirf *verified* numbers call kar sakte hain aur transfer bhi sirf verified number par hoga
-(Twilio Console → Verified Caller IDs mein apna aur `HUMAN_PHONE` add karo). Call ke shuru mein Twilio ka chhota sa trial message bajta hai.
-
-**Urdu/Hindi:** `.env` mein `STT_LANGUAGE=ur-PK` (ya `hi-IN`) aur `TTS_VOICE=Polly.Aditi`, `TTS_LANGUAGE=hi-IN` try karo.
-
-## 6. Google Calendar (free)
-
-1. https://console.cloud.google.com → New project.
-2. "APIs & Services" → Library → **Google Calendar API** → Enable.
-3. "IAM & Admin" → Service Accounts → Create → Keys → Add key → JSON → download.
-   File ko project folder mein `service_account.json` naam se rakho.
-4. Google Calendar (calendar.google.com) → apna calendar → Settings and sharing →
-   *Share with specific people* → service account ka email (`...@...iam.gserviceaccount.com`) add karo → **Make changes to events**.
-5. Usi page par *Integrate calendar* → **Calendar ID** copy karke `.env` mein `GOOGLE_CALENDAR_ID=` par lagao.
-
-Ab agent Google Calendar ke busy time ko skip karega aur booking par event create karega.
-Agar `GOOGLE_CALENDAR_ID` khali ho to sirf local SQLite use hota hai.
-
-## 7. Live link (free hosting) – Hugging Face Spaces
-
-1. https://huggingface.co → New Space → SDK: **Docker** → Public.
-2. Is folder ki files upload karo (`.env`, `service_account.json`, `.venv`, `data`, `tools` **mat** upload karo).
-3. Space → Settings → **Secrets** mein `.env` wali values daalo
-   (`LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`, `GOOGLE_CALENDAR_ID`, `HUMAN_PHONE`, `BUSINESS_NAME` ...)
-   aur `GOOGLE_SERVICE_ACCOUNT_JSON` mein service_account.json ka **pura text** paste karo.
-4. Live link: `https://<username>-<space>.hf.space` — yehi submit karo.
-   Twilio webhook bhi isi URL par lagao: `https://<username>-<space>.hf.space/twilio/voice` (tunnel ki zarurat nahi).
-
-Note: hosted version mein Ollama nahi chalega — Groq (ya Gemini) key use karo.
-
-## Useful URLs
-
-| URL | Kaam |
-|---|---|
-| `GET /api/bookings` | sari bookings |
-| `GET /api/slots/2026-11-20` | us din ke free slots |
-| `POST /api/kb/reload` | knowledge base reload |
+- Speech recognition is the browser's (Chrome/Edge); it is the least reliable link, hence the email read-back and form.
+- Free LLM tiers rate-limit; the chain falls back (Groq -> Gemini -> smaller Groq) and code covers the critical steps.
+- Interruption needs headphones for best results (otherwise the mic hears the agent; an echo filter reduces false triggers).
+- Single-calendar, 30-minute slots, working hours/time zone from `.env`.
 
 ## Files
 
-- `app/agent.py` — AI ka dimagh: prompt, tools (slot check, book, transfer, end call)
-- `app/calendar_store.py` — slots + bookings (SQLite)
-- `app/kb.py` — knowledge base search
-- `app/llm.py` — free LLM client (OpenAI-compatible)
-- `app/main.py` — Twilio webhooks + browser test API
-- `static/index.html` — browser test page
+`app/booking.py` shared state, email recognition + validation · `app/agent.py` conversation + guard rails ·
+`app/main.py` API (web: `/api/web/*`, phone: `/twilio/*`) · `app/llm.py` provider chain + streaming ·
+`app/gcal.py` Google Calendar · `app/calendar_store.py` slots/bookings · `static/index.html` the app UI ·
+`tests/` suites · `knowledge/` FAQ · `scripts/google_login.py` optional invite login.

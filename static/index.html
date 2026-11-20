@@ -4,370 +4,830 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>AI Voice Appointment Agent</title>
+<meta name="description" content="Talk or type to book a meeting. Voice and manual input share one booking, confirmed against Google Calendar.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" media="print" onload="this.media='all'">
 <style>
-  :root { --bg:#f4f2ff; --panel:#ffffff; --panel2:#f7f6fe; --text:#1c1a38; --mute:#6e6b94; --line:#e5e2f6;
-          --primary:#5b4bff; --primary2:#8b5cf6; --danger:#ff4d5e; --amber:#ffb020; --shadow:0 8px 30px rgba(60,40,160,.08);
-          --agentbg:#ffffff; --agentline:#e5e2f6; }
-  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
-          --bg:#0e0d1f; --panel:#17152e; --panel2:#1d1a3a; --text:#eceaff; --mute:#9d9ac4; --line:#2c2955; --shadow:0 8px 30px rgba(0,0,0,.35);
-          --agentbg:#211e44; --agentline:#2f2b5c; } }
+  :root {
+    --bg:#f5f6fb; --surface:#ffffff; --surface2:#f0f2fa; --text:#10142f; --muted:#5a6285; --line:#e2e5f1;
+    --primary:#5b4bff; --primary2:#8a5cff; --cyan:#14b8d4; --ok:#12a566; --warn:#e8870b; --bad:#e5382b;
+    --shadow:0 1px 2px rgba(16,20,47,.05), 0 12px 32px rgba(40,40,120,.08);
+    --ring:0 0 0 3px rgba(91,75,255,.28); --radius:18px;
+    --agent:#ffffff; --user:linear-gradient(135deg,#5b4bff,#8a5cff);
+    color-scheme:light;
+  }
+  :root[data-theme="dark"] {
+    --bg:#080b1a; --surface:#10152e; --surface2:#171d3c; --text:#eef0ff; --muted:#9aa2cb; --line:#252c55;
+    --primary:#7b6dff; --primary2:#a279ff; --cyan:#35d0ea; --ok:#2ed08a; --warn:#f5a524; --bad:#ff6b5f;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 18px 40px rgba(0,0,0,.35);
+    --ring:0 0 0 3px rgba(123,109,255,.4); --agent:#171d3c; color-scheme:dark;
+  }
   * { box-sizing:border-box; }
-  body { margin:0; font-family:"Inter",system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; color:var(--text); min-height:100vh;
-         background:radial-gradient(900px 500px at 8% -8%, rgba(139,92,246,.22), transparent 60%),
-                    radial-gradient(800px 500px at 100% 105%, rgba(255,140,120,.18), transparent 60%), var(--bg); }
-  header { max-width:1100px; margin:0 auto; padding:30px 16px 6px; }
-  .pill { display:inline-flex; align-items:center; gap:7px; font-size:12px; font-weight:600; color:var(--primary); background:rgba(91,75,255,.1);
-          border:1px solid rgba(91,75,255,.22); padding:5px 11px; border-radius:999px; margin-bottom:12px; }
-  .pill i { width:7px; height:7px; border-radius:50%; background:#22c55e; box-shadow:0 0 0 3px rgba(34,197,94,.2); }
-  h1 { font-size:30px; line-height:1.15; margin:0 0 8px; letter-spacing:-.02em;
-       background:linear-gradient(90deg,var(--text),var(--primary)); -webkit-background-clip:text; background-clip:text; color:transparent; }
-  header p { margin:0; color:var(--mute); max-width:640px; line-height:1.55; font-size:15px; }
-  .wrap { max-width:1100px; margin:0 auto; padding:18px 16px 32px; display:grid; grid-template-columns:350px 1fr; gap:18px; align-items:start; }
-  @media (max-width:860px) { .wrap { grid-template-columns:1fr; } }
-  .card { background:var(--panel); border:1px solid var(--line); border-radius:20px; padding:20px; box-shadow:var(--shadow); }
-  .col { display:flex; flex-direction:column; gap:18px; min-width:0; }
+  html { -webkit-text-size-adjust:100%; }
+  body { margin:0; min-height:100vh; color:var(--text); background:var(--bg); font:400 15px/1.5 Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;
+         background-image:radial-gradient(1000px 480px at 12% -8%, rgba(138,92,255,.16), transparent 60%), radial-gradient(900px 520px at 100% 0%, rgba(20,184,212,.10), transparent 55%); background-attachment:fixed; }
+  :focus-visible { outline:none; box-shadow:var(--ring); border-radius:10px; }
+  button, input, select, textarea { font:inherit; color:inherit; }
+  .sr-only { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
 
-  .orbwrap { display:flex; justify-content:center; padding:8px 0 18px; }
-  #orb { width:128px; height:128px; border-radius:50%; opacity:.9; transition:background .25s, opacity .25s;
-         background:radial-gradient(circle at 32% 26%, #d9d0ff, #8b5cf6 52%, #4c3bd6);
-         box-shadow:0 14px 40px rgba(91,75,255,.35), inset 0 -10px 24px rgba(30,10,120,.25); }
-  #orb.live { opacity:1; }
-  #orb.speaking { animation:speak 1.15s ease-in-out infinite; }
-  #orb.listening { background:radial-gradient(circle at 32% 26%, #ffd0d4, #ff5a6a 55%, #c91f33); box-shadow:0 14px 40px rgba(255,77,94,.35), inset 0 -10px 24px rgba(120,0,20,.25); animation:breathe 1.6s ease-in-out infinite; }
-  #orb.thinking { background:radial-gradient(circle at 32% 26%, #ffeab8, #ffb020 55%, #c27a00); box-shadow:0 14px 40px rgba(255,176,32,.35); animation:breathe .9s ease-in-out infinite; }
-  @keyframes speak { 0%,100% { transform:scale(1); } 50% { transform:scale(1.12); box-shadow:0 14px 40px rgba(91,75,255,.35), 0 0 0 22px rgba(139,92,246,.12); } }
-  @keyframes breathe { 50% { transform:scale(1.06); } }
+  /* top bar */
+  .topbar { max-width:1320px; margin:0 auto; padding:18px 20px 6px; display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap; }
+  .brand { display:flex; align-items:center; gap:12px; min-width:0; }
+  .logo { width:40px; height:40px; border-radius:12px; display:grid; place-items:center; color:#fff; background:linear-gradient(135deg,var(--primary),var(--primary2) 55%,var(--cyan)); box-shadow:0 8px 20px rgba(91,75,255,.35); flex:none; }
+  .brand h1 { margin:0; font-size:18px; letter-spacing:-.01em; line-height:1.2; }
+  .brand p { margin:0; font-size:12.5px; color:var(--muted); }
+  .top-actions { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .chip { display:inline-flex; align-items:center; gap:6px; font-size:12px; font-weight:500; padding:5px 10px; border-radius:999px; background:var(--surface); border:1px solid var(--line); color:var(--muted); white-space:nowrap; }
+  .chip i { width:7px; height:7px; border-radius:50%; background:var(--muted); }
+  .chip.ok i { background:var(--ok); box-shadow:0 0 0 3px rgba(18,165,102,.18); } .chip.warn i { background:var(--warn); }
+  .icon-btn { width:36px; height:36px; display:grid; place-items:center; border-radius:10px; border:1px solid var(--line); background:var(--surface); cursor:pointer; color:var(--muted); }
+  .icon-btn:hover { color:var(--text); }
 
-  .btn { width:100%; border:0; border-radius:14px; padding:15px; font-size:16px; font-weight:700; cursor:pointer; color:#fff;
-         background:linear-gradient(135deg,var(--primary),var(--primary2)); box-shadow:0 8px 20px rgba(91,75,255,.28); transition:transform .1s; }
-  .btn:active { transform:scale(.985); }
-  .btn.end { background:linear-gradient(135deg,#ff4d5e,#e11d48); box-shadow:0 8px 20px rgba(225,29,72,.28); }
-  .btn:disabled { opacity:.5; cursor:default; box-shadow:none; }
-  .btn.small { width:auto; padding:9px 15px; font-size:13px; border-radius:11px; box-shadow:none; }
-  #status { text-align:center; color:var(--mute); font-size:14px; margin:14px 0 0; min-height:21px; word-break:break-word; }
-  .field { margin-top:18px; }
-  .field label { display:block; font-size:11.5px; font-weight:600; text-transform:uppercase; letter-spacing:.07em; color:var(--mute); margin-bottom:7px; }
-  select { width:100%; padding:11px; border-radius:12px; border:1px solid var(--line); background:var(--panel2); color:var(--text); font-size:14px; }
-  .check { display:flex; gap:9px; align-items:flex-start; margin-top:14px; font-size:13px; color:var(--mute); line-height:1.4; }
-  .check input { accent-color:var(--primary); margin-top:2px; }
-  .row { display:flex; gap:8px; align-items:center; }
-  .tips { margin:0; padding-left:18px; color:var(--mute); font-size:13.5px; line-height:1.75; }
-  .tips b { color:var(--text); font-weight:600; }
-  h2 { font-size:12px; margin:0 0 12px; letter-spacing:.08em; text-transform:uppercase; color:var(--mute); font-weight:700; }
+  /* layout */
+  .grid { max-width:1320px; margin:0 auto; padding:14px 20px 40px; display:grid; gap:18px; align-items:start;
+          grid-template-columns:minmax(300px,340px) minmax(0,1fr) minmax(330px,400px); grid-template-areas:"console chat details"; }
+  .area-console { grid-area:console; } .area-chat { grid-area:chat; } .area-details { grid-area:details; }
+  @media (max-width:1180px) { .grid { grid-template-columns:minmax(300px,360px) minmax(0,1fr); grid-template-areas:"console details" "chat chat"; } }
+  @media (max-width:760px) { .grid { grid-template-columns:minmax(0,1fr); grid-template-areas:"console" "chat" "details"; padding:12px 14px 32px; } .topbar { padding:14px 14px 4px; }
+    #viz { width:168px; height:168px; } #log { height:38vh; min-height:220px; } .chat-card { min-height:0; } .card { padding:16px; } }
+  .stack { display:flex; flex-direction:column; gap:18px; min-width:0; }
+  .card { background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); padding:20px; box-shadow:var(--shadow); min-width:0; }
+  .card h2 { margin:0 0 14px; font-size:12px; letter-spacing:.09em; text-transform:uppercase; color:var(--muted); font-weight:600; display:flex; align-items:center; justify-content:space-between; gap:8px; }
 
-  #log { display:flex; flex-direction:column; gap:10px; height:46vh; min-height:300px; overflow-y:auto; padding-right:4px; }
-  .msg { padding:11px 14px; border-radius:16px; max-width:82%; font-size:14.5px; line-height:1.5; }
-  .msg small { display:block; font-size:10.5px; font-weight:700; opacity:.65; margin-bottom:3px; text-transform:uppercase; letter-spacing:.07em; }
-  .agent { background:var(--agentbg); border:1px solid var(--agentline); align-self:flex-start; border-bottom-left-radius:5px; }
-  .user { background:linear-gradient(135deg,var(--primary),var(--primary2)); color:#fff; align-self:flex-end; border-bottom-right-radius:5px; }
-  .sys { color:var(--mute); font-size:12px; align-self:center; background:var(--panel2); padding:4px 10px; border-radius:999px; }
-  .empty { color:var(--mute); text-align:center; margin:auto; font-size:14px; }
-  #text { width:100%; padding:13px 14px; border-radius:13px; border:1px solid var(--line); background:var(--panel2); color:var(--text); font-size:14px; margin-top:14px; }
-  #text:focus, select:focus { outline:2px solid rgba(91,75,255,.4); border-color:transparent; }
+  /* console */
+  .viz-wrap { display:grid; place-items:center; margin:-4px 0 6px; }
+  #viz { width:240px; height:240px; max-width:100%; }
+  .status { text-align:center; min-height:44px; }
+  .status .phase { font-weight:600; font-size:15px; }
+  .status .heard { color:var(--muted); font-size:13px; min-height:20px; margin-top:2px; word-break:break-word; }
+  .btn { display:inline-flex; align-items:center; justify-content:center; gap:8px; border:0; border-radius:12px; padding:12px 18px; font-weight:600; cursor:pointer; color:#fff; background:linear-gradient(135deg,var(--primary),var(--primary2)); box-shadow:0 8px 20px rgba(91,75,255,.28); transition:transform .08s, filter .15s; }
+  .btn:hover { filter:brightness(1.06); } .btn:active { transform:scale(.985); }
+  .btn.block { width:100%; }
+  .btn.danger { background:linear-gradient(135deg,#ff5a4d,#e5382b); box-shadow:0 8px 20px rgba(229,56,43,.28); }
+  .btn.ghost { background:var(--surface2); color:var(--text); box-shadow:none; border:1px solid var(--line); }
+  .btn.sm { padding:8px 12px; font-size:13px; border-radius:10px; }
+  .btn:disabled { opacity:.5; cursor:not-allowed; filter:none; box-shadow:none; }
+  .controls { display:grid; grid-template-columns:1fr auto; gap:8px; margin-top:10px; }
+  .meter { display:flex; align-items:center; gap:10px; margin-top:14px; font-size:12.5px; color:var(--muted); }
+  .meter .bar { flex:1; height:6px; border-radius:999px; background:var(--surface2); overflow:hidden; }
+  .meter .bar b { display:block; height:100%; width:0; border-radius:999px; background:linear-gradient(90deg,var(--cyan),var(--primary)); transition:width .08s linear; }
+  .setting { margin-top:16px; }
+  .setting label { display:block; font-size:11.5px; font-weight:600; text-transform:uppercase; letter-spacing:.07em; color:var(--muted); margin-bottom:6px; }
+  select, input[type=text], input[type=date], textarea { width:100%; padding:10px 12px; border-radius:11px; border:1px solid var(--line); background:var(--surface2); color:var(--text); }
+  textarea { resize:vertical; min-height:64px; }
+  select:focus, input:focus, textarea:focus { outline:none; box-shadow:var(--ring); border-color:transparent; }
+  .check { display:flex; gap:9px; align-items:flex-start; margin-top:12px; font-size:13px; color:var(--muted); }
+  .check input { accent-color:var(--primary); margin-top:3px; }
+  .latency { margin-top:16px; padding:10px 12px; border-radius:12px; background:var(--surface2); font-size:12.5px; color:var(--muted); }
+  .latency b { color:var(--text); font-variant-numeric:tabular-nums; }
 
-  table { width:100%; border-collapse:collapse; font-size:13px; }
-  th { text-align:left; color:var(--mute); font-weight:700; font-size:11.5px; text-transform:uppercase; letter-spacing:.05em; padding:7px 6px; border-bottom:1px solid var(--line); }
-  td { padding:10px 6px; border-bottom:1px solid var(--line); word-break:break-word; }
-  tr:last-child td { border-bottom:0; }
-  .none { color:var(--mute); font-size:13px; padding:8px 0; }
+  /* chat */
+  .chat-card { display:flex; flex-direction:column; min-height:520px; }
+  #log { flex:1; display:flex; flex-direction:column; gap:12px; height:46vh; min-height:300px; max-height:62vh; overflow-y:auto; padding:2px 4px 8px 0; scroll-behavior:smooth; }
+  .empty { margin:auto; text-align:center; color:var(--muted); max-width:340px; }
+  .empty strong { display:block; color:var(--text); font-size:16px; margin-bottom:4px; }
+  .msg { display:flex; flex-direction:column; max-width:84%; }
+  .msg .meta { font-size:11px; color:var(--muted); margin:0 4px 3px; display:flex; gap:6px; align-items:center; }
+  .msg .body { padding:11px 14px; border-radius:16px; line-height:1.5; word-break:break-word; }
+  .msg.agent { align-self:flex-start; } .msg.agent .body { background:var(--agent); border:1px solid var(--line); border-bottom-left-radius:5px; }
+  .msg.user { align-self:flex-end; align-items:flex-end; } .msg.user .body { background:var(--user); color:#fff; border-bottom-right-radius:5px; }
+  .msg.streaming .body::after { content:""; display:inline-block; width:6px; height:14px; margin-left:3px; vertical-align:-2px; border-radius:2px; background:var(--primary); animation:blink 1s steps(2) infinite; }
+  @keyframes blink { 50% { opacity:0; } }
+  .note { align-self:center; font-size:12px; color:var(--muted); background:var(--surface2); padding:4px 12px; border-radius:999px; }
+  .note.ok { color:var(--ok); } .note.bad { color:var(--bad); }
+  .tries { display:flex; gap:8px; flex-wrap:wrap; margin:12px 0 4px; }
+  .try { font-size:12.5px; padding:6px 11px; border-radius:999px; background:var(--surface2); border:1px solid var(--line); color:var(--muted); cursor:pointer; }
+  .try:hover { color:var(--text); border-color:var(--primary); }
+  .composer { display:flex; gap:8px; margin-top:8px; }
+  .composer input { flex:1; padding:12px 14px; }
+
+  /* details form */
+  .stepper { display:flex; gap:6px; margin:-2px 0 16px; }
+  .step { flex:1; text-align:center; font-size:11.5px; font-weight:600; color:var(--muted); }
+  .step i { display:block; height:5px; border-radius:999px; background:var(--surface2); margin-bottom:6px; transition:background .3s; }
+  .step.done { color:var(--ok); } .step.done i { background:var(--ok); }
+  .step.active { color:var(--primary); } .step.active i { background:linear-gradient(90deg,var(--primary),var(--primary2)); }
+  .field { margin-top:13px; position:relative; }
+  .field label { display:flex; align-items:center; justify-content:space-between; font-size:12.5px; font-weight:600; margin-bottom:6px; }
+  .src { font-size:10.5px; font-weight:600; letter-spacing:.04em; text-transform:uppercase; padding:2px 7px; border-radius:999px; background:var(--surface2); color:var(--muted); }
+  .src.voice { color:var(--primary); background:rgba(91,75,255,.1); } .src.manual, .src.typed { color:var(--cyan); background:rgba(20,184,212,.12); }
+  .field.err input, .field.err select, .field.err textarea { border-color:var(--bad); }
+  .msg-line { font-size:12.5px; margin-top:5px; min-height:0; color:var(--muted); }
+  .msg-line.bad { color:var(--bad); } .msg-line.ok { color:var(--ok); } .msg-line.warn { color:var(--warn); }
+  .row2 { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  @media (max-width:420px) { .row2 { grid-template-columns:1fr; } }
+  .just-filled { animation:fill 1.1s ease; }
+  @keyframes fill { 0% { box-shadow:0 0 0 0 rgba(91,75,255,.55); background:rgba(91,75,255,.12); } 100% { box-shadow:0 0 0 12px rgba(91,75,255,0); } }
+  .emailbar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:6px; font-size:12.5px; }
+  .pill-btn { border:1px solid var(--line); background:var(--surface2); border-radius:999px; padding:4px 10px; font-size:12px; font-weight:600; cursor:pointer; color:var(--text); }
+  .pill-btn:hover { border-color:var(--primary); color:var(--primary); }
+  .pulse-hint { animation:hint 1.4s ease-in-out 3; }
+  @keyframes hint { 50% { box-shadow:0 0 0 4px rgba(232,135,11,.35); } }
+  .slotline { margin-top:10px; font-size:13px; min-height:20px; }
+  .slotline.ok { color:var(--ok); } .slotline.bad { color:var(--bad); } .slotline.mute { color:var(--muted); }
+  .alts { display:flex; gap:6px; flex-wrap:wrap; margin-top:6px; }
+  .actions { display:flex; gap:10px; margin-top:18px; }
+  .actions .btn.primary { flex:1; }
+  .tz { margin-top:12px; font-size:12px; color:var(--muted); }
+  .success { margin-top:14px; padding:14px; border-radius:14px; border:1px solid rgba(18,165,102,.35); background:rgba(18,165,102,.08); }
+  .success h3 { margin:0 0 6px; font-size:15px; color:var(--ok); }
+  .success dl { margin:0; display:grid; grid-template-columns:auto 1fr; gap:3px 12px; font-size:13px; } .success dt { color:var(--muted); } .success dd { margin:0; word-break:break-word; }
+  .success a { color:var(--primary); font-weight:600; }
+  .booklist { display:flex; flex-direction:column; gap:8px; }
+  .book { display:grid; grid-template-columns:auto 1fr; gap:2px 12px; padding:10px 12px; border-radius:12px; background:var(--surface2); font-size:13px; }
+  .book .when { font-weight:600; font-variant-numeric:tabular-nums; } .book .who { color:var(--muted); grid-column:2; word-break:break-word; }
+  .none { color:var(--muted); font-size:13px; }
+
+  /* dialog + toast */
+  dialog { border:1px solid var(--line); border-radius:20px; padding:0; width:min(460px,92vw); background:var(--surface); color:var(--text); box-shadow:0 30px 80px rgba(0,0,0,.35); }
+  dialog::backdrop { background:rgba(8,11,26,.55); backdrop-filter:blur(3px); }
+  .dlg { padding:24px; } .dlg h3 { margin:0 0 4px; font-size:18px; } .dlg p { margin:0 0 14px; color:var(--muted); font-size:13.5px; }
+  .dlg dl { margin:0 0 18px; display:grid; grid-template-columns:90px 1fr; gap:9px 12px; font-size:14px; } .dlg dt { color:var(--muted); } .dlg dd { margin:0; font-weight:600; word-break:break-word; }
+  .dlg .actions { margin-top:6px; }
+  #toast { position:fixed; left:50%; bottom:22px; transform:translateX(-50%) translateY(20px); opacity:0; pointer-events:none; background:var(--text); color:var(--bg); padding:11px 16px; border-radius:12px; font-size:13.5px; max-width:min(520px,92vw); transition:all .25s; z-index:50; box-shadow:0 12px 30px rgba(0,0,0,.3); }
+  #toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
+  @media (prefers-reduced-motion: reduce) { * { animation:none !important; transition:none !important; scroll-behavior:auto !important; } }
 </style>
-
 </head>
 <body>
-<header>
-  <div class="pill"><i></i> Live demo</div>
-  <h1>AI Voice Appointment Agent</h1>
-  <p>Talk to the receptionist: ask about services, describe what you need, and book a meeting that lands on Google Calendar in real time.</p>
+<header class="topbar">
+  <div class="brand">
+    <div class="logo" aria-hidden="true"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3v18M8 8v8M4 11v2M16 7v10M20 10v4"/></svg></div>
+    <div><h1>AI Voice Appointment Agent</h1><p id="bizline">Loading…</p></div>
+  </div>
+  <div class="top-actions">
+    <span class="chip" id="chipCal"><i></i><span>Calendar</span></span>
+    <span class="chip" id="chipTz"><i></i><span>Time zone</span></span>
+    <button class="icon-btn" id="themeBtn" type="button" aria-label="Switch between light and dark theme" title="Theme">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+    </button>
+  </div>
 </header>
 
-<div class="wrap">
-  <!-- LEFT: call + voice -->
-  <div class="col">
-    <div class="card">
-      <div class="orbwrap"><div id="orb"></div></div>
-      <button class="btn" id="callBtn">Start call</button>
-      <div id="status">Press “Start call” and allow the microphone.</div>
-
-      <div class="field">
-        <label for="voice">Agent voice</label>
-        <select id="voice"><option value="natural">Natural (neural)</option></select>
-      </div>
-      <div class="row field" style="margin-top:12px">
-        <button class="btn small" id="micBtn" disabled>🎤 Mic on</button>
-      </div>
-      <label class="check"><input type="checkbox" id="bargeIn" checked>
-        <span>Let me interrupt the agent (best with headphones)</span></label>
+<main class="grid">
+  <!-- CALL CONSOLE -->
+  <section class="card area-console" aria-labelledby="hConsole">
+    <h2 id="hConsole">Voice call</h2>
+    <div class="viz-wrap"><canvas id="viz" width="480" height="480" role="img" aria-label="Voice activity visualization"></canvas></div>
+    <div class="status" aria-live="polite">
+      <div class="phase" id="phase">Ready</div>
+      <div class="heard" id="heard">Press “Start call” and allow the microphone.</div>
     </div>
+    <div class="controls">
+      <button class="btn block" id="callBtn" type="button">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .4 1.9.7 2.8a2 2 0 0 1-.5 2.1L8.1 9.9a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.8.7a2 2 0 0 1 1.7 2z"/></svg>
+        <span id="callBtnText">Start call</span></button>
+      <button class="btn ghost" id="micBtn" type="button" disabled aria-pressed="true" aria-label="Microphone"><span id="micBtnText">Mic on</span></button>
+    </div>
+    <div class="meter" aria-hidden="true"><span id="micState">Mic idle</span><div class="bar"><b id="micLevel"></b></div></div>
+    <div class="setting"><label for="voice">Agent voice</label>
+      <select id="voice"><option value="natural">Natural (neural)</option></select></div>
+    <label class="check"><input type="checkbox" id="bargeIn" checked><span>Let me interrupt the agent (works best with headphones)</span></label>
+    <div class="latency" id="latency" title="Measured on the server. Speech recognition and voice playback add a little on top.">No reply yet — latency appears here after the first answer.</div>
+  </section>
 
-    <div class="card">
-      <h2>Things to try</h2>
-      <ul class="tips">
-        <li><b>“What services do you offer, and how much does a website cost?”</b></li>
-        <li><b>“I’d like to book a meeting tomorrow at 3 PM.”</b> — then change your mind: <i>“Actually, make it Monday at 11.”</i></li>
-        <li>Ask for a <b>Sunday</b> or <b>10 PM</b> — it will suggest open times.</li>
-        <li>When asked, <b>spell your email</b> (“john at gmail dot com”).</li>
-        <li><b>“Can I talk to a real person?”</b></li>
-      </ul>
+  <!-- CONVERSATION -->
+  <section class="card chat-card area-chat" aria-labelledby="hChat">
+    <h2 id="hChat">Conversation <span class="chip" id="chipMode" style="text-transform:none;letter-spacing:0">Voice + typing share one booking</span></h2>
+    <div id="log" role="log" aria-live="polite" aria-relevant="additions">
+      <div class="empty" id="empty"><strong>Talk or type — your choice.</strong>Start a call and speak, or just type below. You can also fill the booking form on the right at any time; the agent keeps up.</div>
+    </div>
+    <div class="tries" aria-label="Things to try">
+      <button class="try" type="button">What services do you offer?</button>
+      <button class="try" type="button">Book a meeting tomorrow at 3 PM</button>
+      <button class="try" type="button">Actually, make it the day after tomorrow at 11 AM</button>
+      <button class="try" type="button">Is Sunday available?</button>
+    </div>
+    <form class="composer" id="composer" autocomplete="off">
+      <label class="sr-only" for="text">Type a message</label>
+      <input type="text" id="text" placeholder="Type a message and press Enter…" maxlength="400">
+      <button class="btn" type="submit" id="sendBtn">Send</button>
+    </form>
+  </section>
+
+  <!-- DETAILS -->
+  <aside class="stack area-details">
+    <section class="card" aria-labelledby="hDetails" id="detailsCard">
+      <h2 id="hDetails">Appointment details</h2>
+      <ol class="stepper" id="stepper" style="list-style:none;padding:0" aria-label="Booking progress">
+        <li class="step" data-s="details"><i></i>Details</li>
+        <li class="step" data-s="availability"><i></i>Availability</li>
+        <li class="step" data-s="review"><i></i>Review</li>
+        <li class="step" data-s="booked"><i></i>Booked</li>
+      </ol>
+      <form id="bookForm" novalidate autocomplete="on">
+        <div class="field" data-f="name">
+          <label for="fName">Full name <span class="src" id="src-name"></span></label>
+          <input type="text" id="fName" name="name" autocomplete="name" placeholder="e.g. Ahmed Khan" maxlength="80" aria-describedby="msg-name">
+          <div class="msg-line" id="msg-name"></div>
+        </div>
+        <div class="field" data-f="email">
+          <label for="fEmail">Email address <span class="src" id="src-email"></span></label>
+          <input type="text" id="fEmail" name="email" inputmode="email" autocomplete="email" autocapitalize="none" spellcheck="false" placeholder="name@gmail.com" aria-describedby="msg-email">
+          <div class="msg-line" id="msg-email"></div>
+          <div class="emailbar" id="emailBar"></div>
+        </div>
+        <div class="row2">
+          <div class="field" data-f="date">
+            <label for="fDate">Date <span class="src" id="src-date"></span></label>
+            <input type="date" id="fDate" name="date" aria-describedby="msg-date">
+            <div class="msg-line" id="msg-date"></div>
+          </div>
+          <div class="field" data-f="time">
+            <label for="fTime">Time <span class="src" id="src-time"></span></label>
+            <select id="fTime" name="time" disabled aria-describedby="msg-time"><option value="">Pick a date first</option></select>
+            <div class="msg-line" id="msg-time"></div>
+          </div>
+        </div>
+        <div class="slotline mute" id="slotLine" aria-live="polite"></div>
+        <div class="alts" id="alts"></div>
+        <div class="field" data-f="purpose">
+          <label for="fPurpose">What is the meeting about? <span class="src" id="src-purpose"></span></label>
+          <textarea id="fPurpose" name="purpose" rows="2" maxlength="200" placeholder="e.g. Build an online store" aria-describedby="msg-purpose"></textarea>
+          <div class="msg-line" id="msg-purpose"></div>
+        </div>
+        <div class="tz" id="tzNote"></div>
+        <div class="actions">
+          <button type="button" class="btn ghost" id="clearBtn">Clear</button>
+          <button type="button" class="btn primary" id="reviewBtn" disabled>Review &amp; confirm</button>
+        </div>
+      </form>
+      <div class="success" id="success" hidden aria-live="polite">
+        <h3>✓ Booked and confirmed</h3>
+        <dl id="successDl"></dl>
+        <p style="margin:10px 0 0;font-size:13px" id="successLinks"></p>
+        <div class="actions"><button type="button" class="btn ghost" id="againBtn">Book another meeting</button></div>
+      </div>
+    </section>
+
+    <section class="card" aria-labelledby="hBookings">
+      <h2 id="hBookings">Recent bookings <button class="btn sm ghost" type="button" id="refreshBtn">Refresh</button></h2>
+      <div class="booklist" id="bookings"><div class="none">No bookings yet.</div></div>
+    </section>
+  </aside>
+</main>
+
+<dialog id="reviewDlg" aria-labelledby="dlgTitle">
+  <div class="dlg">
+    <h3 id="dlgTitle">Review your appointment</h3>
+    <p>Check every detail. Nothing is booked until you confirm.</p>
+    <dl id="dlgDl"></dl>
+    <div class="actions">
+      <button type="button" class="btn ghost" id="dlgEdit">Edit details</button>
+      <button type="button" class="btn primary" id="dlgConfirm">Confirm booking</button>
     </div>
   </div>
-
-  <!-- RIGHT: conversation + bookings -->
-  <div class="col">
-    <div class="card">
-      <h2>Conversation</h2>
-      <div id="log"><div class="empty" id="empty">The conversation will appear here.</div></div>
-      <input type="text" id="text" placeholder="Or type a message and press Enter" disabled>
-    </div>
-
-    <div class="card">
-      <div class="row" style="justify-content:space-between"><h2 style="margin:0">Bookings</h2><button class="btn small" id="refresh">Refresh</button></div>
-      <div id="bookings" style="margin-top:8px"></div>
-    </div>
-  </div>
-</div>
+</dialog>
+<div id="toast" role="status" aria-live="polite"></div>
 
 <script>
+(() => {
+'use strict';
 const $ = id => document.getElementById(id);
+const FIELDS = ['date', 'time', 'name', 'email', 'purpose'];
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-const LANG = 'en-US';            // English only
-const SILENCE_MS = 1300;         // caller silence before we reply
-const NATURAL_TIMEOUT_MS = 2500; // if the natural voice isn't playing by then, use the browser voice
-const NATURAL_OK_MS = 2500;      // page-load speed probe: slower than this -> default to the (instant) browser voice
+const SILENCE_FINAL_MS = 900;     // pause after a finished phrase before we answer
+const SILENCE_INTERIM_MS = 1300;  // pause after a still-unfinished phrase
+const NATURAL_TIMEOUT_MS = 2500;  // neural voice must start playing within this, else browser voice
+const NATURAL_OK_MS = 2500;       // load-time probe: slower than this -> default to the instant browser voice
+const FIELD_LABEL = { date: 'date', time: 'time', name: 'name', email: 'email', purpose: 'purpose' };
 
-// phase: idle | listening | thinking | speaking
-let phase = 'idle', sessionId = null, rec = null, micOn = true;
-let finalBuf = '', interim = '', silenceTimer = null;
-let audio = null, speakingText = '', speakDone = null, naturalSlow = false;
-let lastAgentText = '', agentEndedAt = 0, naturalForced = false;
-$('voice').onchange = () => { naturalForced = $('voice').value === 'natural'; };
+const S = { sid: null, phase: 'idle', call: false, state: null, micOn: true, micBlocked: false, ctrl: null, interrupted: false,
+            naturalSlow: false, naturalForced: false, lastAgent: '', agentEndedAt: 0, emailMode: false, reviewKey: '', cfg: {} };
 
-// Did the mic just hear the agent's own voice coming out of the speakers (echo) rather than the caller?
-function isEcho(text) {
-  const words = (text.toLowerCase().match(/[a-z0-9']+/g) || []);
-  if (words.length < 3) return false;
-  const own = new Set((lastAgentText.toLowerCase().match(/[a-z0-9']+/g) || []));
-  const ratio = words.filter(w => own.has(w)).length / words.length;
-  const recent = Date.now() - agentEndedAt < 5000;
-  return ratio >= (recent ? 0.6 : 0.85) && words.length >= (recent ? 3 : 6);
+/* ------------------------------------------------------------------ small helpers */
+function fmtTime(hhmm) { const [h, m] = hhmm.split(':').map(Number); return `${h % 12 || 12}${m ? ':' + String(m).padStart(2, '0') : ''} ${h < 12 ? 'AM' : 'PM'}`; }
+function fmtDate(iso) { return new Date(iso + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' }); }
+let toastT;
+function toast(msg, ms = 4200) { const t = $('toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('show'), ms); }
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  if (!r.ok) throw new Error(`Server error ${r.status}`);
+  return r.json();
 }
+function lsGet(k) { try { return localStorage.getItem(k); } catch (_) { return null; } }
+function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (_) { /* private mode */ } }
 
-function add(cls, text, who) {
+/* ------------------------------------------------------------------ theme */
+function applyTheme(t) { document.documentElement.dataset.theme = t; }
+applyTheme(lsGet('theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
+$('themeBtn').onclick = () => { const t = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'; applyTheme(t); lsSet('theme', t); };
+
+/* ------------------------------------------------------------------ transcript */
+function addBubble(role, text, via) {
   const e = $('empty'); if (e) e.remove();
-  const d = document.createElement('div'); d.className = 'msg ' + cls;
-  if (who) { const s = document.createElement('small'); s.textContent = who; d.appendChild(s); }
-  d.appendChild(document.createTextNode(text));
-  $('log').appendChild(d); $('log').scrollTop = 1e9;
+  const wrap = document.createElement('div'); wrap.className = 'msg ' + role;
+  const meta = document.createElement('div'); meta.className = 'meta';
+  const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  meta.textContent = (role === 'agent' ? 'Agent' : 'You' + (via ? ' · ' + (via === 'typed' ? 'typed' : 'voice') : '')) + ' · ' + time;
+  const body = document.createElement('div'); body.className = 'body'; body.textContent = text;
+  wrap.append(meta, body); $('log').appendChild(wrap); $('log').scrollTop = 1e9;
+  return { wrap, body };
 }
-function sysMsg(text) { const d = document.createElement('div'); d.className = 'sys'; d.textContent = text; $('log').appendChild(d); $('log').scrollTop = 1e9; }
-function setOrb(mode) { $('orb').className = mode ? 'live ' + mode : ''; }
-function status(t, mode) { $('status').textContent = t; setOrb(mode); }
-function heard() { return (finalBuf + ' ' + interim).replace(/\s+/g, ' ').trim(); }
+function note(text, cls) { const e = $('empty'); if (e) e.remove(); const d = document.createElement('div'); d.className = 'note ' + (cls || ''); d.textContent = text; $('log').appendChild(d); $('log').scrollTop = 1e9; }
 
-// ------------------------------------------------------------------ speaking
+/* ------------------------------------------------------------------ status + visualizer */
+function setPhase(p) { S.phase = p; }
+function status(text, p) { $('phase').textContent = text; if (p) setPhase(p); }
+function showHeard(t) { $('heard').textContent = t || ''; }
+function updateMicUI() {
+  $('micBtnText').textContent = S.micBlocked ? 'Mic blocked' : S.micOn ? 'Mic on' : 'Mic off';
+  $('micBtn').setAttribute('aria-pressed', String(S.micOn));
+  $('micState').textContent = S.micBlocked ? 'Mic blocked' : !S.call ? 'Mic idle' : S.micOn ? 'Mic on' : 'Mic off';
+}
+let actx = null, micAn = null, outAn = null, micStream = null, curAudio = null;
+const tdBuf = new Uint8Array(512);
+function rms(an) { if (!an) return 0; an.getByteTimeDomainData(tdBuf); let s = 0; for (let i = 0; i < tdBuf.length; i++) { const v = (tdBuf[i] - 128) / 128; s += v * v; } return Math.min(1, Math.sqrt(s / tdBuf.length) * 3.4); }
+async function initAudio() {
+  try {
+    actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+    if (actx.state === 'suspended') await actx.resume();
+    if (!micStream) {
+      micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+      micAn = actx.createAnalyser(); micAn.fftSize = 512; actx.createMediaStreamSource(micStream).connect(micAn);
+    }
+  } catch (e) { if (e && e.name === 'NotAllowedError') { S.micBlocked = true; updateMicUI(); } }
+}
+let vizLevel = 0, vizRot = 0;
+const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+function drawViz(ts) {
+  const c = $('viz'), g = c.getContext('2d'), W = c.width, cx = W / 2, cy = W / 2;
+  g.clearRect(0, 0, W, W);
+  const dark = document.documentElement.dataset.theme === 'dark';
+  let target, c1, c2;
+  switch (S.phase) {
+    case 'listening': target = S.micOn ? Math.max(0.12, rms(micAn)) : 0.05; c1 = '#ff6b5f'; c2 = '#ffb347'; break;
+    case 'speaking': target = curAudio && outAn ? Math.max(0.2, rms(outAn)) : 0.3 + 0.28 * Math.abs(Math.sin(ts / 130) * Math.sin(ts / 340)); c1 = '#7b6dff'; c2 = '#35d0ea'; break;
+    case 'thinking': target = 0.2 + 0.08 * Math.sin(ts / 200); c1 = '#f5a524'; c2 = '#ffd36b'; break;
+    default: target = 0.07 + 0.035 * Math.sin(ts / 900); c1 = '#7b6dff'; c2 = '#8a5cff';
+  }
+  if (reduceMotion) target = 0.12;
+  vizLevel += (target - vizLevel) * 0.2;
+  vizRot += S.phase === 'thinking' ? 0.035 : 0.004;
+  const base = 78 + vizLevel * 20;
+  const glow = g.createRadialGradient(cx, cy, base * .6, cx, cy, base * 2.1);
+  glow.addColorStop(0, c1 + (dark ? '55' : '40')); glow.addColorStop(1, c1 + '00');
+  g.fillStyle = glow; g.beginPath(); g.arc(cx, cy, base * 2.1, 0, 7); g.fill();
+  const N = 64;
+  for (let i = 0; i < N; i++) {
+    const a = (i / N) * Math.PI * 2 + vizRot;
+    const wob = 0.5 + 0.5 * Math.sin(i * 1.7 + ts / (S.phase === 'speaking' ? 90 : 260)) * Math.sin(i * 0.6 - ts / 400);
+    const len = 8 + (reduceMotion ? 6 : wob * vizLevel * 78 + vizLevel * 14);
+    const r1 = base + 12, r2 = r1 + len;
+    g.strokeStyle = i % 2 ? c1 : c2; g.globalAlpha = 0.85; g.lineWidth = 5; g.lineCap = 'round';
+    g.beginPath(); g.moveTo(cx + Math.cos(a) * r1, cy + Math.sin(a) * r1); g.lineTo(cx + Math.cos(a) * r2, cy + Math.sin(a) * r2); g.stroke();
+  }
+  g.globalAlpha = 1;
+  const core = g.createRadialGradient(cx - base * .3, cy - base * .35, 6, cx, cy, base);
+  core.addColorStop(0, '#ffffff66'); core.addColorStop(.25, c2); core.addColorStop(1, c1);
+  g.fillStyle = core; g.beginPath(); g.arc(cx, cy, base, 0, 7); g.fill();
+  $('micLevel').style.width = (S.call && S.micOn && S.phase === 'listening' ? Math.round(rms(micAn) * 100) : 0) + '%';
+  requestAnimationFrame(drawViz);
+}
+
+/* ------------------------------------------------------------------ speaking (sentence queue; natural voice with browser fallback) */
+const Q = { items: [], busy: false, waiters: [] };
+let curResolve = null;
+function stopSpeaking() {
+  Q.items.length = 0;
+  if (curAudio) { curAudio.onended = curAudio.onerror = null; try { curAudio.pause(); } catch (_) {} curAudio = null; }
+  try { window.speechSynthesis && speechSynthesis.cancel(); } catch (_) {}
+  if (curResolve) { const r = curResolve; curResolve = null; r(); }
+}
 function fillVoices() {
   if (!window.speechSynthesis) return;
   const sel = $('voice'), keep = sel.value;
   const vs = speechSynthesis.getVoices().map((v, i) => [v, i]).filter(([v]) => v.lang.startsWith('en'));
-  sel.innerHTML = '<option value="natural">Natural (neural)</option>' +
-    vs.map(([v, i]) => `<option value="${i}">Browser: ${v.name}</option>`).join('');
-  sel.value = keep || 'natural';
+  sel.innerHTML = '<option value="natural">Natural (neural)</option>' + vs.map(([v, i]) => `<option value="${i}">Browser: ${v.name}</option>`).join('');
+  sel.value = [...sel.options].some(o => o.value === keep) ? keep : 'natural';
 }
-
-function browserSpeak(text) {
-  return new Promise(res => {
-    if (!window.speechSynthesis) return res();
-    speechSynthesis.cancel();
-    const u = new SpeechSynthesisUtterance(text);
-    const vs = speechSynthesis.getVoices(), sel = $('voice').value;
-    const v = sel !== 'natural' ? vs[+sel]
-      : (vs.find(v => /natural|online/i.test(v.name) && v.lang.startsWith('en')) || vs.find(v => v.name.includes('Google US English')) || vs.find(v => v.lang === LANG));
-    if (v) u.voice = v;
-    u.lang = LANG; u.rate = 1.08; u.onend = u.onerror = res;
-    speechSynthesis.speak(u);
-  });
-}
-
-function naturalSpeak(text) {
-  return new Promise(res => {
-    let started = false, finished = false;
-    const done = ok => { if (finished) return; finished = true; clearTimeout(t); res(ok); };
-    audio = new Audio('/api/tts?text=' + encodeURIComponent(text));
-    audio.onplaying = () => { started = true; };
-    audio.onended = () => done(true);
-    audio.onerror = () => done(started);
-    const t = setTimeout(() => { if (!started) { audio.pause(); done(false); } }, NATURAL_TIMEOUT_MS);
-    audio.play().catch(() => done(false));
-  });
-}
-
-async function speak(text) {
-  phase = 'speaking'; speakingText = text.toLowerCase(); lastAgentText = text;
-  finalBuf = interim = '';
-  status('Agent is speaking…' + ($('bargeIn').checked ? ' (you can interrupt)' : ''), 'speaking');
-  ensureRec();
-  let ok = false;
-  if ($('voice').value === 'natural' && (!naturalSlow || naturalForced)) {
-    ok = await naturalSpeak(text);
-    if (!ok && phase === 'speaking') { naturalSlow = true; sysMsg('Natural voice is slow on this network — using the browser voice for this call.'); }
-  }
-  if (!ok && phase === 'speaking') await browserSpeak(text);
-  agentEndedAt = Date.now();
-}
-
-function stopSpeaking() {
-  if (audio) { audio.onended = audio.onerror = null; audio.pause(); audio = null; }
-  if (window.speechSynthesis) speechSynthesis.cancel();
-}
-
-// Is what the mic heard while the agent talks the caller (not the agent's own voice from the speakers)?
-function isRealInterruption(text) {
-  const words = text.toLowerCase().match(/[a-z0-9']+/g) || [];
-  if (words.length < 2) return false;
-  const own = new Set(speakingText.match(/[a-z0-9']+/g) || []);
-  return words.filter(w => own.has(w)).length / words.length < 0.5;
-}
-
-// ------------------------------------------------------------------ listening (one recognizer for the whole call)
-function ensureRec() {
-  if (!SR || !micOn || phase === 'idle' || rec) return;
-  rec = new SR(); rec.lang = LANG; rec.continuous = true; rec.interimResults = true;
-  rec.onresult = e => {
-    interim = '';
-    for (let i = e.resultIndex; i < e.results.length; i++) {
-      const r = e.results[i];
-      if (r.isFinal) finalBuf += ' ' + r[0].transcript; else interim += r[0].transcript;
-    }
-    if (isEcho(heard())) { finalBuf = interim = ''; return; }   // agent's own voice, not the caller
-    if (phase === 'speaking') {
-      if ($('bargeIn').checked && isRealInterruption(heard())) {
-        stopSpeaking(); if (speakDone) speakDone();
-        sysMsg('✋ interrupted'); phase = 'listening';
-      } else { finalBuf = ''; return; }
-    }
-    if (phase === 'thinking') { finalBuf = interim = ''; return; }
-    if (phase === 'listening') {
-      status(heard(), 'listening');
-      clearTimeout(silenceTimer); silenceTimer = setTimeout(finishUtterance, SILENCE_MS);
-    }
-  };
-  rec.onerror = e => {
-    if (e.error === 'not-allowed') { micOn = false; updateMicBtn(); status('Microphone blocked — click the 🔒 icon in the address bar and allow it, or type below.'); }
-  };
-  rec.onend = () => { rec = null; if (phase !== 'idle' && micOn) setTimeout(ensureRec, 100); };
-  try { rec.start(); } catch (_) { rec = null; }
-}
-
-function startListening() {
-  if (phase === 'idle') return;
-  phase = 'listening'; finalBuf = interim = '';
-  status(micOn && SR ? 'Listening… speak now' : 'Type your message below.', micOn && SR ? 'listening' : 'live');
-  // restart the recognizer so late echo of the agent's last words is thrown away
-  if (rec) { rec.onend = rec.onresult = rec.onerror = null; try { rec.abort(); } catch (_) {} rec = null; }
-  setTimeout(ensureRec, 250);
-}
-function finishUtterance() { const t = heard(); if (phase === 'listening' && t) send(t); }
-
-// ------------------------------------------------------------------ conversation
-async function handle(data) {
-  add('agent', data.reply, 'Agent');
-  let interrupted = false;
-  await Promise.race([speak(data.reply), new Promise(r => { speakDone = () => { interrupted = true; r(); }; })]);
-  speakDone = null;
-  if (phase === 'idle') return;
-  if (data.action === 'transfer') { sysMsg('↪ Transferring to a human' + (data.human_phone ? ': ' + data.human_phone : '')); return stop(); }
-  if (data.action === 'hangup') { sysMsg('Call ended by agent'); return stop(); }
-  if (!interrupted) startListening();
-}
-
-async function send(text) {
-  text = text.trim(); if (!text || phase === 'idle') return;
-  clearTimeout(silenceTimer); stopSpeaking();
-  phase = 'thinking'; finalBuf = interim = '';
-  add('user', text, 'You'); status('Thinking…', 'thinking');
-  try {
-    const r = await fetch('/api/web/message', { method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ session_id: sessionId, text }) });
-    if (!r.ok) throw new Error('server ' + r.status);
-    await handle(await r.json()); loadBookings();
-  } catch (e) { status('Error: ' + e.message + ' — please try again.'); startListening(); }
-}
-
-async function start() {
-  const b = $('callBtn'); b.textContent = 'End call'; b.classList.add('end');
-  $('text').disabled = false; $('micBtn').disabled = false;
-  $('log').innerHTML = ''; micOn = true; updateMicBtn();
-  phase = 'thinking'; status('Connecting…', 'thinking');
-  try {
-    const data = await (await fetch('/api/web/start', { method:'POST' })).json();
-    sessionId = data.session_id; await handle(data);
-  } catch (e) { status('Could not start: ' + e.message); stop(); }
-}
-
-function stop() {
-  phase = 'idle'; clearTimeout(silenceTimer); stopSpeaking();
-  if (rec) { rec.onend = null; try { rec.abort(); } catch (_) {} rec = null; }
-  const b = $('callBtn'); b.textContent = 'Start call'; b.classList.remove('end');
-  $('text').disabled = true; $('micBtn').disabled = true;
-  status('Call ended.'); loadBookings();
-}
-
-function updateMicBtn() { $('micBtn').textContent = micOn ? '🎤 Mic on' : '🔇 Mic off'; }
-$('micBtn').onclick = () => {
-  micOn = !micOn; updateMicBtn();
-  if (!micOn && rec) { rec.onend = null; try { rec.abort(); } catch (_) {} rec = null; }
-  if (micOn) ensureRec(); else if (phase === 'listening') status('Mic off — type below or turn the mic on.');
-};
-$('callBtn').onclick = () => { if (phase === 'idle') start(); else { sysMsg('You ended the call'); stop(); } };
-$('text').onkeydown = e => { if (e.key === 'Enter') { send(e.target.value); e.target.value = ''; } };
-
-async function loadBookings() {
-  try {
-    const rows = await (await fetch('/api/bookings')).json();
-    const box = $('bookings');
-    if (!rows.length) { box.innerHTML = '<div class="none">No bookings yet.</div>'; return; }
-    const t = document.createElement('table');
-    t.innerHTML = '<tr><th>When</th><th>Name</th><th>Email</th><th>Purpose</th></tr>';
-    for (const b of rows.slice().reverse()) {
-      const tr = document.createElement('tr');
-      for (const v of [b.start.slice(0, 16).replace('T', ' '), b.name, b.email, b.purpose]) {
-        const td = document.createElement('td'); td.textContent = v || '—'; tr.appendChild(td);
-      }
-      t.appendChild(tr);
-    }
-    box.innerHTML = ''; box.appendChild(t);
-  } catch (_) {}
-}
-$('refresh').onclick = loadBookings;
-if (!SR) status('This browser cannot listen — use Chrome or Edge, or type your messages.');
-if (window.speechSynthesis) { fillVoices(); speechSynthesis.onvoiceschanged = fillVoices; }
-loadBookings();
-
-// Best instant browser voice: Edge's "Natural/Online" voices sound great; else Google/Microsoft English.
 function bestBrowserVoice() {
   const vs = speechSynthesis.getVoices().map((v, i) => [v, i]).filter(([v]) => v.lang.startsWith('en'));
   const pick = re => vs.find(([v]) => re.test(v.name));
   const f = pick(/natural|online/i) || pick(/google us english/i) || pick(/zira|aria|jenny|samantha|google/i) || vs[0];
   return f ? String(f[1]) : null;
 }
+function browserSpeak(text) {
+  return new Promise(res => {
+    if (!window.speechSynthesis) return res();
+    let done = false, wd;
+    const fin = () => { if (done) return; done = true; clearTimeout(wd); if (curResolve === fin) curResolve = null; res(); };
+    curResolve = fin;
+    try {
+      speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text), vs = speechSynthesis.getVoices(), sel = $('voice').value;
+      const v = sel !== 'natural' ? vs[+sel] : (vs.find(x => /natural|online/i.test(x.name) && x.lang.startsWith('en')) || vs.find(x => x.name.includes('Google US English')) || vs.find(x => x.lang === 'en-US'));
+      if (v) u.voice = v;
+      u.lang = 'en-US'; u.rate = 1.05; u.onend = u.onerror = fin;
+      wd = setTimeout(fin, Math.max(2500, text.length * 90));      // some browsers never fire onend
+      speechSynthesis.speak(u);
+    } catch (_) { fin(); }
+  });
+}
+function naturalSpeak(text) {
+  return new Promise(res => {
+    let started = false, fin = false, t;
+    const done = ok => { if (fin) return; fin = true; clearTimeout(t); curAudio = null; if (curResolve === handle) curResolve = null; res(ok); };
+    const handle = () => done(true);                 // interrupted: treat as spoken, do not fall back
+    const a = new Audio('/api/tts?text=' + encodeURIComponent(text)); a.crossOrigin = 'anonymous';
+    curAudio = a; curResolve = handle;
+    try {
+      if (actx) { const src = actx.createMediaElementSource(a); outAn = outAn || actx.createAnalyser(); outAn.fftSize = 512; src.connect(outAn); outAn.connect(actx.destination); }
+    } catch (_) {}
+    a.onplaying = () => { started = true; };
+    a.onended = () => done(true);
+    a.onerror = () => done(started);
+    t = setTimeout(() => { if (!started) { try { a.pause(); } catch (_) {} done(false); } }, NATURAL_TIMEOUT_MS);
+    a.play().catch(() => done(false));
+  });
+}
+async function speakOne(text) {
+  const wantNatural = $('voice').value === 'natural' && (!S.naturalSlow || S.naturalForced);
+  if (wantNatural) {
+    const ok = await naturalSpeak(text);
+    if (ok || S.phase !== 'speaking') return;
+    S.naturalSlow = true; note('Natural voice is slow on this network — using the browser voice.');
+  }
+  await browserSpeak(text);
+}
+function enqueueSpeak(text) {
+  if (!S.call) return;
+  S.lastAgent = (Q.busy || Q.items.length) ? S.lastAgent + ' ' + text : text;
+  Q.items.push(text); S.phase = 'speaking';
+  status('Agent is speaking…' + ($('bargeIn').checked && S.micOn ? ' (you can interrupt)' : ''), 'speaking');
+  ensureRec(); pump();
+}
+async function pump() {
+  if (Q.busy) return; Q.busy = true;
+  while (Q.items.length && S.call) await speakOne(Q.items.shift());
+  Q.busy = false; S.agentEndedAt = Date.now();
+  Q.waiters.splice(0).forEach(f => f());
+}
+function waitSpeechIdle() { return new Promise(res => { (!Q.busy && !Q.items.length) ? res() : Q.waiters.push(res); }); }
 
-// Measure the natural (neural) voice once. If it takes too long on this network, start with the instant browser voice.
+/* ------------------------------------------------------------------ listening (one continuous recognizer per call) */
+let rec = null, finalBuf = '', interim = '', silenceTimer = null, lastFinal = false;
+const heard = () => (finalBuf + ' ' + interim).replace(/\s+/g, ' ').trim();
+const words = t => (t.toLowerCase().match(/[a-z0-9']+/g) || []);
+function overlap(text) { const own = new Set(words(S.lastAgent)), w = words(text); return w.length ? w.filter(x => own.has(x)).length / w.length : 0; }
+function isEcho(text) {                          // the mic hearing the agent's own voice from the speakers
+  const w = words(text), recent = Date.now() - S.agentEndedAt < 5000;
+  return S.phase !== 'idle' && w.length >= (recent ? 3 : 6) && overlap(text) >= (recent ? 0.6 : 0.85);
+}
+function isRealInterruption(text) { return words(text).length >= 2 && overlap(text) < 0.5; }
+// Email-specific recognition: ask the recognizer for several candidates and prefer one that looks like an email.
+function pickAlternative(result) {
+  let best = result[0].transcript, score = -1;
+  for (let i = 0; i < result.length; i++) {
+    const t = ' ' + result[i].transcript.toLowerCase() + ' ';
+    const sc = /[a-z0-9._%+-]+@[a-z0-9-]+\.[a-z]{2,}/.test(t) ? 3 : /\sat\s+[a-z0-9 ]+\s+dot\s+(com|net|org|edu|io|co|pk|uk|ai)\s/.test(t) ? 2 : (/\sat\s/.test(t) && /\sdot\s/.test(t)) ? 1 : 0;
+    if (sc > score) { score = sc; best = result[i].transcript; }
+  }
+  return best;
+}
+function interrupt() {
+  stopSpeaking(); if (S.ctrl) { S.interrupted = true; S.ctrl.abort(); }
+  note('✋ interrupted'); status('Listening… go ahead', 'listening');
+  clearTimeout(silenceTimer); silenceTimer = setTimeout(finishUtterance, SILENCE_INTERIM_MS);
+}
+function ensureRec() {
+  if (!SR || !S.micOn || !S.call || rec) return;
+  rec = new SR(); rec.lang = 'en-US'; rec.continuous = true; rec.interimResults = true; rec.maxAlternatives = S.emailMode ? 5 : 1;
+  rec.onresult = e => {
+    interim = ''; lastFinal = false;
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const r = e.results[i];
+      if (r.isFinal) { finalBuf += ' ' + (S.emailMode ? pickAlternative(r) : r[0].transcript); lastFinal = true; } else interim += r[0].transcript;
+    }
+    const text = heard();
+    if (isEcho(text)) { finalBuf = interim = ''; return; }
+    if (S.phase === 'speaking') {
+      if ($('bargeIn').checked && isRealInterruption(text)) interrupt(); else { finalBuf = ''; return; }
+    }
+    if (S.phase === 'thinking') { finalBuf = interim = ''; return; }
+    if (S.phase === 'listening') {
+      showHeard('🎙 ' + text);
+      clearTimeout(silenceTimer); silenceTimer = setTimeout(finishUtterance, lastFinal ? SILENCE_FINAL_MS : SILENCE_INTERIM_MS);
+    }
+  };
+  rec.onerror = e => {
+    if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+      S.micBlocked = true; S.micOn = false; updateMicUI(); status('Microphone blocked — allow it in the address bar, or type instead.');
+    }
+  };
+  rec.onend = () => { rec = null; if (S.call && S.micOn) setTimeout(ensureRec, 120); };
+  try { rec.start(); } catch (_) { rec = null; }
+}
+function killRec() { if (rec) { rec.onend = rec.onresult = rec.onerror = null; try { rec.abort(); } catch (_) {} rec = null; } }
+function startListening() {
+  if (!S.call) return;
+  finalBuf = interim = ''; showHeard('');
+  S.emailMode = /email/i.test(S.lastAgent);
+  status(S.micOn && SR ? (S.emailMode ? 'Listening… say your email or type it' : 'Listening… speak now') : 'Mic off — type your reply', 'listening');
+  if (S.emailMode) $('fEmail').classList.add('pulse-hint');
+  killRec(); setTimeout(ensureRec, 250);
+}
+function finishUtterance() {
+  const t = heard();
+  if (S.phase === 'listening' && t) { finalBuf = interim = ''; showHeard(''); sendUser(t, 'voice'); }
+}
+
+/* ------------------------------------------------------------------ conversation turn (streamed) */
+async function ensureSession(silent) {
+  if (S.sid) return S.sid;
+  const r = await api('/api/web/start', { silent });
+  S.sid = r.session_id; render(r.state);
+  return S.sid;
+}
+function showLatency(ms, client) {
+  const f = x => (x / 1000).toFixed(1) + ' s';
+  const bits = [];
+  if (client) bits.push(`first words <b>${f(client)}</b>`);
+  if (ms && ms.total_ms != null) bits.push(`total <b>${f(ms.total_ms)}</b>`);
+  if (ms && ms.model) bits.push(ms.model);
+  if (ms && ms.streamed !== undefined) bits.push('streamed');
+  $('latency').innerHTML = 'Last reply · ' + bits.join(' · ');
+}
+async function sendUser(text, via) {
+  text = (text || '').trim(); if (!text) return;
+  clearTimeout(silenceTimer); stopSpeaking(); S.interrupted = false;
+  addBubble('user', text, via);
+  const callOn = S.call;
+  if (callOn) status('Thinking…', 'thinking'); else setPhase('idle');
+  $('fEmail').classList.remove('pulse-hint');
+  await ensureSession(true);
+  const ctrl = new AbortController(); S.ctrl = ctrl;
+  let bubble = null, done = null, firstAt = null; const t0 = performance.now();
+  S.lastAgent = '';
+  const onEvent = ev => {
+    if (ev.t === 'sentence') {
+      if (!bubble) { bubble = addBubble('agent', '', null); bubble.wrap.classList.add('streaming'); }
+      bubble.body.textContent += (bubble.body.textContent ? ' ' : '') + ev.text;
+      $('log').scrollTop = 1e9;
+      if (firstAt === null) firstAt = performance.now() - t0;
+      enqueueSpeak(ev.text);
+    } else if (ev.t === 'state') render(ev.state);
+    else if (ev.t === 'done') { done = ev; render(ev.state); }
+    else if (ev.t === 'error') throw new Error(ev.error);
+  };
+  try {
+    const resp = await fetch('/api/web/stream', { method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: ctrl.signal,
+                                                  body: JSON.stringify({ session_id: S.sid, text, via }) });
+    if (!resp.ok) throw new Error('Server error ' + resp.status);
+    const reader = resp.body.getReader(), dec = new TextDecoder(); let buf = '';
+    for (;;) {
+      const { value, done: end } = await reader.read(); if (end) break;
+      buf += dec.decode(value, { stream: true }); let i;
+      while ((i = buf.indexOf('\n')) >= 0) { const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1); if (line) onEvent(JSON.parse(line)); }
+    }
+  } catch (e) {
+    if (bubble) bubble.wrap.classList.remove('streaming');
+    if (e.name === 'AbortError' || S.interrupted) { resync(); return; }
+    note('Connection problem — please try again.', 'bad'); if (callOn) startListening(); return;
+  }
+  if (bubble) { bubble.wrap.classList.remove('streaming'); if (done && done.reply && bubble.body.textContent !== done.reply) bubble.body.textContent = done.reply; }
+  else if (done && done.reply) { bubble = addBubble('agent', done.reply, null); enqueueSpeak(done.reply); }
+  if (done) showLatency(done.timings, firstAt);
+  loadBookings();
+  if (!callOn) return;
+  await waitSpeechIdle();
+  if (!S.call || S.interrupted) return;
+  if (done && done.action === 'transfer') { note('↪ Transferring to a human' + (done.human_phone ? ': ' + done.human_phone : ''), 'ok'); return endCall(true); }
+  if (done && done.action === 'hangup') { note('Call ended by the agent'); return endCall(true); }
+  startListening();
+}
+async function resync() { if (!S.sid) return; try { render(await api('/api/web/state/' + S.sid)); } catch (_) {} }
+
+/* an agent line that did not come from the LLM (greeting, follow-up after a form edit) */
+async function agentSay(text) {
+  addBubble('agent', text, null);
+  if (!S.call) return;
+  stopSpeaking(); S.lastAgent = ''; enqueueSpeak(text);
+  await waitSpeechIdle(); if (S.call) startListening();
+}
+
+/* ------------------------------------------------------------------ call control */
+async function startCall() {
+  S.call = true; S.interrupted = false; setPhase('thinking');
+  $('callBtnText').textContent = 'End call'; $('callBtn').classList.add('danger'); $('micBtn').disabled = false;
+  S.micOn = true; updateMicUI(); status('Connecting…', 'thinking'); showHeard('');
+  initAudio();                                   // meter + permission prompt; non-blocking
+  try {
+    const r = await api('/api/web/start', { silent: false, session_id: S.sid });
+    S.sid = r.session_id; render(r.state);
+    await agentSay(r.reply);
+  } catch (e) { note('Could not start the call: ' + e.message, 'bad'); endCall(true); }
+}
+async function endCall(fromAgent) {
+  if (!S.call && !fromAgent) return;
+  S.call = false; clearTimeout(silenceTimer); stopSpeaking(); killRec(); if (S.ctrl) { S.interrupted = true; S.ctrl.abort(); }
+  setPhase('idle'); $('callBtnText').textContent = 'Start call'; $('callBtn').classList.remove('danger'); $('micBtn').disabled = true;
+  status('Call ended', 'idle'); showHeard('The form and chat still work — you can keep typing.'); updateMicUI();
+  if (!fromAgent) note('You ended the call');
+  if (S.sid) { try { render(await api('/api/web/end', { session_id: S.sid })); } catch (_) {} }
+}
+$('callBtn').onclick = () => (S.call ? endCall(false) : startCall());
+$('micBtn').onclick = () => {
+  S.micOn = !S.micOn; updateMicUI();
+  if (!S.micOn) { killRec(); if (S.phase === 'listening') status('Mic off — type your reply'); } else { S.micBlocked = false; updateMicUI(); S.phase === 'listening' ? startListening() : ensureRec(); }
+};
+$('composer').onsubmit = e => { e.preventDefault(); const t = $('text').value; $('text').value = ''; sendUser(t, 'typed'); };
+document.querySelectorAll('.try').forEach(b => b.onclick = () => sendUser(b.textContent, 'typed'));
+
+/* ------------------------------------------------------------------ shared booking state <-> form */
+const el = { name: $('fName'), email: $('fEmail'), date: $('fDate'), time: $('fTime'), purpose: $('fPurpose') };
+const EMAIL_RE = /^[a-z0-9][a-z0-9._%+-]*@[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}$/i;
+function setMsg(f, text, cls) { const m = $('msg-' + f); m.textContent = text || ''; m.className = 'msg-line ' + (cls || ''); el[f].closest('.field').classList.toggle('err', cls === 'bad'); el[f].setAttribute('aria-invalid', cls === 'bad' ? 'true' : 'false'); }
+function srcBadge(f, s) { const b = $('src-' + f); const label = { voice: 'heard by voice', typed: 'typed in chat', manual: 'you edited' }[s] || ''; b.textContent = label; b.className = 'src ' + (s || ''); b.hidden = !label; }
+function flash(node) { node.classList.remove('just-filled'); void node.offsetWidth; node.classList.add('just-filled'); }
+
+function renderTimes(st) {
+  const sel = el.time, v = st.values.time, free = (st.slot && st.slot.free) || [];
+  const has = !!st.values.date;
+  const opts = [];
+  opts.push(`<option value="">${has ? (free.length ? 'Select a time' : 'No times available') : 'Pick a date first'}</option>`);
+  free.forEach(t => opts.push(`<option value="${t}">${fmtTime(t)}</option>`));
+  if (v && !free.includes(v)) opts.push(`<option value="${v}">${fmtTime(v)} (unavailable)</option>`);
+  if (document.activeElement !== sel) { sel.innerHTML = opts.join(''); sel.value = v || ''; }
+  sel.disabled = !has;
+}
+function render(st) {
+  if (!st) return;
+  const prev = S.state; S.state = st;
+  ['name', 'purpose', 'date'].forEach(f => {
+    const v = st.values[f] || '', err = st.errors[f];
+    setMsg(f, err, err ? 'bad' : '');
+    srcBadge(f, st.source[f]);
+    if (document.activeElement === el[f] || (err && el[f].value)) return;      // never fight the user's typing
+    if (el[f].value !== v) { el[f].value = v; if (v && prev && prev.values[f] !== v) flash(el[f]); }
+  });
+  renderTimes(st);
+  if (st.values.time && prev && prev.values.time !== st.values.time) flash(el.time);
+  setMsg('time', st.errors.time, st.errors.time ? 'bad' : '');
+  srcBadge('time', st.source.time);
+  renderEmail(st, prev);
+  renderSlot(st);
+  renderSteps(st);
+  const booked = !!st.booked;
+  $('bookForm').hidden = booked; $('success').hidden = !booked;
+  if (booked) renderSuccess(st);
+  $('reviewBtn').disabled = !st.ready;
+  $('chipMode').textContent = st.call_active ? 'Call active · voice + typing + form in sync' : 'Voice + typing share one booking';
+}
+function renderEmail(st, prev) {
+  const f = 'email', input = el.email, v = st.values.email || '', err = st.errors.email;
+  srcBadge(f, st.source.email);
+  const bar = $('emailBar'); bar.innerHTML = '';
+  if (document.activeElement !== input && !(err && input.value) && input.value !== v) { input.value = v; if (v && (!prev || prev.values.email !== v)) flash(input); }
+  if (err) { setMsg(f, err, 'bad'); return; }
+  if (v && st.email_status === 'unconfirmed') {
+    setMsg(f, 'Heard by voice — please check the spelling before we send the invite.', 'warn');
+    const ok = document.createElement('button'); ok.type = 'button'; ok.className = 'pill-btn'; ok.textContent = '✓ Looks right'; ok.onclick = () => pushManual({ email: v });
+    bar.appendChild(ok);
+  } else if (v && st.email_status === 'confirmed') setMsg(f, '✓ Email verified', 'ok');
+  else setMsg(f, 'The calendar invite is sent here.', '');
+  if (st.email_suggestion && st.email_suggestion !== v) {
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'pill-btn'; b.textContent = 'Did you mean ' + st.email_suggestion + '?'; b.onclick = () => pushManual({ email: st.email_suggestion });
+    bar.appendChild(b);
+  }
+}
+function renderSlot(st) {
+  const line = $('slotLine'), alts = $('alts'); alts.innerHTML = '';
+  const s = st.slot, v = st.values;
+  line.className = 'slotline';
+  if (!v.date) { line.classList.add('mute'); line.textContent = st.errors.date ? '' : 'Choose a date to see open times.'; return; }
+  if (!s) { line.textContent = ''; return; }
+  if (s.ok) { line.classList.add('ok'); line.textContent = `✓ ${fmtDate(v.date)} at ${fmtTime(v.time)} is available.`; return; }
+  if (s.code === 'no_time') { line.classList.add('mute'); line.textContent = `${(s.free || []).length} open times on ${fmtDate(v.date)} — pick one.`; return; }
+  line.classList.add('bad'); line.textContent = s.error || 'That slot is not available.';
+  (s.free || []).slice(0, 5).forEach(t => { const b = document.createElement('button'); b.type = 'button'; b.className = 'pill-btn'; b.textContent = fmtTime(t); b.onclick = () => pushManual({ time: t }); alts.appendChild(b); });
+}
+function renderSteps(st) {
+  const order = ['details', 'availability', 'review', 'booked'];
+  let activeSet = false;
+  order.forEach(k => {
+    const li = document.querySelector(`.step[data-s="${k}"]`); li.className = 'step';
+    if (st.steps[k]) li.classList.add('done'); else if (!activeSet) { li.classList.add('active'); activeSet = true; }
+  });
+}
+function renderSuccess(st) {
+  const b = st.booked; const dl = $('successDl'); dl.innerHTML = '';
+  [['When', b.when], ['Name', b.name], ['Email', b.email], ['Topic', b.purpose], ['Calendar', b.calendar === 'google' ? 'Google Calendar' : 'Saved locally']].forEach(([k, v]) => {
+    const dt = document.createElement('dt'), dd = document.createElement('dd'); dt.textContent = k; dd.textContent = v || '—'; dl.append(dt, dd);
+  });
+  const links = $('successLinks'); links.textContent = b.invite_sent ? 'A calendar invite was sent to your email. ' : '';
+  if (b.event_link) { const a = document.createElement('a'); a.href = b.event_link; a.target = '_blank'; a.rel = 'noopener'; a.textContent = 'Open in Google Calendar'; links.appendChild(a); }
+}
+
+/* manual edits: the form writes to the same state the agent reads */
+async function pushManual(fields) {
+  const cur = S.state ? S.state.values : {};
+  const changed = Object.fromEntries(Object.entries(fields).filter(([k, v]) => (cur[k] || '') !== (v || '')));
+  if (!Object.keys(changed).length) return;
+  await ensureSession(true);
+  try {
+    const r = await api('/api/web/state', { session_id: S.sid, fields: changed });
+    render(r.state);
+    if (S.call) note('You updated ' + Object.keys(changed).map(k => FIELD_LABEL[k]).join(' and ') + ' in the form');
+    if (r.followup) await agentSay(r.followup);
+  } catch (e) { toast('Could not save that change: ' + e.message); }
+}
+['name', 'purpose'].forEach(f => { el[f].addEventListener('change', () => pushManual({ [f]: el[f].value.trim() })); });
+el.name.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); el.name.blur(); } });
+el.email.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); el.email.blur(); } });
+el.email.addEventListener('input', () => { const v = el.email.value.trim(); if (v && !EMAIL_RE.test(v) && v.includes('@') && v.split('@')[1].includes('.')) setMsg('email', 'That doesn’t look like a valid email address yet.', 'warn'); else if (!v) setMsg('email', '', ''); });
+el.email.addEventListener('change', () => pushManual({ email: el.email.value.trim() }));
+el.date.addEventListener('change', () => { if (el.date.value && S.cfg.today && el.date.value < S.cfg.today) { setMsg('date', 'That date has already passed. Please choose a future date.', 'bad'); return; } pushManual({ date: el.date.value }); });
+el.time.addEventListener('change', () => pushManual({ time: el.time.value }));
+async function resetForm(keepContact) {
+  if (!S.sid) { FIELDS.forEach(f => { el[f].value = ''; }); return; }
+  S.state = null;
+  render(await api('/api/web/reset', { session_id: S.sid, keep_contact: keepContact }));
+  FIELDS.forEach(f => { if (!keepContact || (f !== 'name' && f !== 'email')) el[f].value = ''; });
+  note(keepContact ? 'Ready for another meeting' : 'Appointment details cleared');
+}
+$('clearBtn').onclick = () => resetForm(false);
+$('againBtn').onclick = () => resetForm(true);
+
+/* review + confirm (the only way the form books) */
+$('reviewBtn').onclick = async () => {
+  try {
+    const r = await api('/api/web/review', { session_id: S.sid }); render(r.state);
+    if (!r.ok) { toast(r.issues.join(' ')); return; }
+    S.reviewKey = r.key;
+    const dl = $('dlgDl'); dl.innerHTML = '';
+    [['When', r.summary.when], ['Name', r.summary.name], ['Email', r.summary.email], ['Topic', r.summary.purpose], ['Time zone', r.summary.timezone], ['Calendar', r.summary.calendar]].forEach(([k, v]) => {
+      const dt = document.createElement('dt'), dd = document.createElement('dd'); dt.textContent = k; dd.textContent = v; dl.append(dt, dd);
+    });
+    $('dlgConfirm').disabled = false; $('dlgConfirm').textContent = 'Confirm booking';
+    $('reviewDlg').showModal();
+  } catch (e) { toast('Could not review: ' + e.message); }
+};
+$('dlgEdit').onclick = () => $('reviewDlg').close();
+$('dlgConfirm').onclick = async () => {
+  const b = $('dlgConfirm'); b.disabled = true; b.textContent = 'Booking…';
+  try {
+    const r = await api('/api/web/confirm', { session_id: S.sid, key: S.reviewKey });
+    $('reviewDlg').close(); render(r.state); loadBookings();
+    if (r.success && r.state.booked) {
+      note('✓ Booked: ' + r.state.booked.when, 'ok');
+      if (S.call) { stopSpeaking(); S.lastAgent = ''; enqueueSpeak(`Done! Your meeting is booked for ${r.state.booked.when}.`); }
+    } else { note('Not booked: ' + ((r.result && r.result.error) || 'please review the details'), 'bad'); toast((r.result && r.result.error) || 'Could not book.'); }
+  } catch (e) { $('reviewDlg').close(); toast('Booking failed: ' + e.message); }
+};
+
+/* ------------------------------------------------------------------ bookings list + boot */
+async function loadBookings() {
+  try {
+    const rows = await api('/api/bookings'), box = $('bookings');
+    if (!rows.length) { box.innerHTML = '<div class="none">No bookings yet.</div>'; return; }
+    box.innerHTML = '';
+    rows.slice(-6).reverse().forEach(b => {
+      const d = document.createElement('div'); d.className = 'book';
+      const when = document.createElement('div'); when.className = 'when'; const [dd, tt] = b.start.slice(0, 16).split('T'); when.textContent = fmtDate(dd).replace(/^\w+, /, '') + ' · ' + fmtTime(tt);
+      const what = document.createElement('div'); what.textContent = (b.name || '—') + (b.purpose ? ' — ' + b.purpose : '');
+      const who = document.createElement('div'); who.className = 'who'; who.textContent = b.email || '';
+      d.append(when, what, who); box.appendChild(d);
+    });
+  } catch (_) {}
+}
+$('refreshBtn').onclick = loadBookings;
+
 async function probeNatural() {
   const t0 = performance.now();
-  try {
-    const r = await fetch('/api/tts?text=' + encodeURIComponent('Okay, one moment.'));
-    await r.arrayBuffer();
-    if (!r.ok) throw new Error('tts ' + r.status);
-  } catch (_) { return useBrowserVoice('Natural voice unavailable'); }
-  const ms = performance.now() - t0;
-  if (ms > NATURAL_OK_MS) useBrowserVoice('Natural voice is slow on this network (' + (ms / 1000).toFixed(1) + 's)');
+  try { const r = await fetch('/api/tts?text=' + encodeURIComponent('Okay, one moment.')); await r.arrayBuffer(); if (!r.ok) throw 0; } catch (_) { return useBrowserVoice(); }
+  if (performance.now() - t0 > NATURAL_OK_MS) useBrowserVoice();
 }
-function useBrowserVoice(why) {
-  naturalSlow = true;
+function useBrowserVoice() {
+  S.naturalSlow = true;
   const i = window.speechSynthesis ? bestBrowserVoice() : null;
-  if (i !== null) { $('voice').value = i; }
-  if (phase === 'idle') $('status').textContent = why + ' — using the fast browser voice. Pick "Natural" in the list to force it.';
+  if (i !== null) $('voice').value = i;
 }
-setTimeout(() => { fillVoices(); probeNatural(); }, 800);
+$('voice').onchange = () => { S.naturalForced = $('voice').value === 'natural'; };
+
+async function boot() {
+  try {
+    S.cfg = await api('/api/config');
+    $('bizline').textContent = `${S.cfg.business} · ${S.cfg.open}–${S.cfg.close} · ${S.cfg.slot_minutes}-min meetings`;
+    const cal = $('chipCal'); cal.classList.add(S.cfg.calendar === 'google' ? 'ok' : 'warn');
+    cal.lastElementChild.textContent = S.cfg.calendar === 'google' ? 'Google Calendar connected' : 'Local calendar only';
+    $('chipTz').lastElementChild.textContent = `${S.cfg.timezone_label} · ${S.cfg.timezone}`;
+    const max = new Date(S.cfg.today + 'T12:00:00'); max.setDate(max.getDate() + S.cfg.max_days);
+    el.date.min = S.cfg.today; el.date.max = max.toISOString().slice(0, 10);
+    const mine = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    $('tzNote').textContent = `All times are in ${S.cfg.timezone}` + (mine && mine !== S.cfg.timezone ? ` (your device is in ${mine}).` : '.');
+  } catch (_) { $('bizline').textContent = 'Could not load settings'; }
+  loadBookings();
+  if (window.speechSynthesis) { fillVoices(); speechSynthesis.onvoiceschanged = fillVoices; }
+  setTimeout(() => { fillVoices(); probeNatural(); }, 800);
+  updateMicUI();
+  if (!SR) $('heard').textContent = 'This browser can’t listen — use Chrome or Edge for voice, or just type.';
+  requestAnimationFrame(drawViz);
+}
+window.__app = { S, sendUser, render, pushManual };    // handy for debugging and the UI tests
+boot();
+})();
 </script>
 </body>
 </html>

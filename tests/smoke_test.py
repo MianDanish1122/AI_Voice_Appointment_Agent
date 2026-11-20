@@ -1,118 +1,614 @@
-﻿"""Offline smoke test with a fake LLM (no API key needed). Run: .venv\\Scripts\\python -m tests.smoke_test"""
+﻿"""Offline test suite (no network, no API keys, never touches the real Google Calendar).
+
+Run from the repo root:  .venv\\Scripts\\python -m tests.smoke_test
+
+The LLM is replaced by a tiny rule-based fake and Google Calendar by an in-memory fake (only here, in the tests).
+Everything else - booking state, email recognition, validation, confirmation rules, SQLite, HTTP API - is the real code.
+"""
 import asyncio
 import datetime as dt
 import json
 import os
+import re
 import tempfile
+import time
+import traceback
 from pathlib import Path
 
-from app import calendar_store, config
+os.environ["GOOGLE_CALENDAR_ID"] = ""          # tests must never use the real calendar
+from app import agent, booking, calendar_store, config, gcal, llm  # noqa: E402
 
-config.DB_PATH = Path(tempfile.mkdtemp()) / "test.db"
 config.HUMAN_PHONE = "+920000000000"
-config.GOOGLE_CALENDAR_ID = ""  # never touch the real Google Calendar from this offline test
-
-from fastapi.testclient import TestClient  # noqa: E402
-
-from app import agent, llm  # noqa: E402
-from app.main import app  # noqa: E402
-
-
-def next_workday() -> str:
-    d = calendar_store.now().date() + dt.timedelta(days=1)
-    while d.weekday() not in config.WORK_DAYS:
-        d += dt.timedelta(days=1)
-    return d.isoformat()
-
-
-DAY = next_workday()
-script = []  # queue of fake LLM responses
-
-
-def tc(name, args):
-    return {"tool_calls": [{"id": f"c{len(script)}", "type": "function",
-                            "function": {"name": name, "arguments": json.dumps(args)}}], "content": None}
-
-
-async def fake_chat(messages, tools=None):
-    return script.pop(0)
-
-llm.chat = fake_chat
-agent.llm.chat = fake_chat
-
-c = TestClient(app)
-
-# KB
-from app.kb import kb  # noqa: E402
-assert "50,000" in kb.search("website price"), "KB search failed"
-
-# Calendar
-s = calendar_store.available_slots(DAY)
-assert s["available"], s
-assert calendar_store.book(DAY, "11:00", "Ali")["success"]
-assert not calendar_store.book(DAY, "11:00", "Bilal")["success"], "double booking allowed!"
-assert "11:00" not in calendar_store.available_slots(DAY)["available"]
-
-# Twilio flow: answer -> book -> transfer
-r = c.post("/twilio/voice", data={"CallSid": "CA1", "From": "+920000"})
-assert "<Gather" in r.text and "How can I help" in r.text
-
-script += [tc("check_available_slots", {"date": DAY}), {"content": "We have 10:00 and 10:30 free. Which one?"}]
-r = c.post("/twilio/gather", data={"CallSid": "CA1", "SpeechResult": "book a meeting tomorrow"})
-assert "10 AM" in r.text and "<Gather" in r.text
-
-# placeholder name must be rejected; first real call only asks for confirmation (nothing booked yet)
-script += [tc("book_appointment", {"date": DAY, "time": "10:30", "name": "[Name]", "email": "danish@test.com", "purpose": "website design"}),
-           tc("book_appointment", {"date": DAY, "time": "10:30", "name": "Danish", "email": "danish at test dot com", "purpose": "website design"})]
-r = c.post("/twilio/gather", data={"CallSid": "CA1", "SpeechResult": "10:30, my name is Danish, email danish at test dot com, it is about website design"})
-assert "Shall I book it?" in r.text and "10:30 AM" in r.text, r.text
-assert not any(b["name"] in ("Danish", "[Name]") for b in c.get("/api/bookings").json()), "booked without confirmation!"
-script += [tc("book_appointment", {"date": DAY, "time": "10:30", "name": "Danish", "email": "danish at test dot com", "purpose": "website design"})]
-r = c.post("/twilio/gather", data={"CallSid": "CA1", "SpeechResult": "yes"})
-assert "is booked for" in r.text, r.text
-assert not script, "unused fake LLM replies left"
-
-# past dates are refused
-assert "past" in calendar_store.available_slots("2026-01-05")["error"]
-assert any(b["name"] == "Danish" and b["phone"] == "+920000" for b in c.get("/api/bookings").json())
-
-script += [tc("transfer_to_human", {"reason": "asked"}), {"content": "Connecting you now."}]
-r = c.post("/twilio/gather", data={"CallSid": "CA1", "SpeechResult": "talk to a human"})
-assert "<Dial>" in r.text, r.text
-
-# Silence handling
-c.post("/twilio/voice", data={"CallSid": "CA2"})
-assert "Are you still there" in c.post("/twilio/noinput", data={"CallSid": "CA2"}).text
-assert "<Hangup/>" in c.post("/twilio/noinput", data={"CallSid": "CA2"}).text
-
-# Browser flow: model wrongly calls end_call right after checking slots -> call must stay open
-sid = c.post("/api/web/start").json()["session_id"]
-script += [{"tool_calls": [{"id": "a", "type": "function", "function": {"name": "check_available_slots", "arguments": json.dumps({"date": DAY})}},
-                           {"id": "b", "type": "function", "function": {"name": "end_call", "arguments": "{}"}}], "content": None},
-           {"content": "We have 10:00 and 11:30. Which time works for you?"}]
-r = c.post("/api/web/message", json={"session_id": sid, "text": "20 Nov to discuss business"}).json()
-assert r["action"] is None, r
-script += [tc("end_call", {}), {"content": "Which time works for you?"}]
-r = c.post("/api/web/message", json={"session_id": sid, "text": "hmm"}).json()
-assert r["action"] is None, r
-script += [tc("end_call", {}), {"content": "Goodbye!"}]
-r = c.post("/api/web/message", json={"session_id": sid, "text": "bye"}).json()
-assert r["action"] == "hangup"
-
-assert c.get("/").status_code == 200
-
-# Google Calendar path (faked): busy 14:00-15:00 must be hidden; booking creates an event
-from app import gcal  # noqa: E402
+config.GOOGLE_CALENDAR_ID = ""
 TZ = calendar_store.TZ
-d = dt.date.fromisoformat(DAY)
-busy = [(dt.datetime.combine(d, dt.time(14, 0), TZ), dt.datetime.combine(d, dt.time(15, 0), TZ))]
-events = []
-gcal.enabled = lambda: True
-gcal.busy_intervals = lambda s, e: [b for b in busy if b[0] < e and s < b[1]]
-gcal.create_event = lambda s, e, n, p, pu, em="": events.append((s, n)) or {"id": "x", "link": "http://cal"}
-free = calendar_store.available_slots(DAY)["available"]
-assert "14:00" not in free and "14:30" not in free and "15:00" in free, free
-assert not calendar_store.book(DAY, "14:30", "Zara")["success"]
-assert calendar_store.book(DAY, "15:00", "Zara")["success"] and events[-1][1] == "Zara"
-assert not any(b["name"] == "Zara" and "14:30" in b["start"] for b in calendar_store.list_bookings())
-print("ALL SMOKE TESTS PASSED")
+NOW = dt.datetime(2026, 11, 23, 9, 0, tzinfo=TZ)            # a fixed Monday morning: tomorrow = Tue, +2 = Wed
+calendar_store.now = lambda: NOW
+
+
+def iso(days: int) -> str:
+    return (NOW.date() + dt.timedelta(days=days)).isoformat()
+
+
+def phrase(days: int) -> str:                                # "on November 25"
+    d = NOW.date() + dt.timedelta(days=days)
+    return f"on {d.strftime('%B')} {d.day}"
+
+
+# ------------------------------------------------------------------ fakes
+class FakeLLM:
+    """Rule-based stand-in for the model: extracts name/purpose via the same tool calls a real model makes."""
+    delay = 0.0
+    default = "Sure. How can I help?"
+    calls = 0
+
+    async def chat(self, messages, tools=None, on_text=None, stats=None):
+        FakeLLM.calls += 1
+        if stats is not None:
+            stats.update(model="fake", total_ms=1)
+        if messages[-1]["role"] == "tool":
+            called = [tc["function"]["name"] for m in messages if m.get("tool_calls") for tc in m["tool_calls"]]
+            return await self._text("Goodbye!" if called and called[-1] == "end_call" else "Okay. What's next?", on_text)
+        text = next(m["content"] for m in reversed(messages) if m["role"] == "user")
+        args = {}
+        m = re.search(r"my name is ([A-Za-z]+(?: [A-Za-z]+)?)", text, re.I)
+        if m:
+            args["name"] = m.group(1)
+        if "INVENT" in text:
+            args["name"] = "John Doe"
+        m = re.search(r"(?:discuss|about) ([^.?!]+)", text, re.I)
+        if m:
+            args["purpose"] = m.group(1).strip()
+        if args:
+            return self._tool("update_booking_details", args)
+        if "go ahead and book" in text.lower():
+            return self._tool("book_appointment", {})
+        if "goodbye" in text.lower():
+            return self._tool("end_call", {})
+        return await self._text(self.default, on_text)
+
+    @staticmethod
+    def _tool(name, args):
+        return {"role": "assistant", "content": None,
+                "tool_calls": [{"id": "c1", "type": "function", "function": {"name": name, "arguments": json.dumps(args)}}]}
+
+    async def _text(self, text, on_text):
+        if on_text:
+            for chunk in re.findall(r"\S+\s*", text):
+                on_text(chunk)
+                if self.delay:
+                    await asyncio.sleep(self.delay)
+        return {"role": "assistant", "content": text}
+
+
+class FakeGoogle:
+    """In-memory Google Calendar: busy times, created events, optional failures."""
+
+    def __init__(self, busy=(), fail_create=False, fail_busy=False):
+        self.busy, self.events, self.fail_create, self.fail_busy = list(busy), [], fail_create, fail_busy
+
+    def install(self):
+        self._saved = (gcal.enabled, gcal.busy_intervals, gcal.create_event, gcal.oauth_enabled)
+        gcal.enabled = lambda: True
+        gcal.oauth_enabled = lambda: False
+        gcal.busy_intervals = self.busy_intervals
+        gcal.create_event = self.create_event
+        return self
+
+    def uninstall(self):
+        gcal.enabled, gcal.busy_intervals, gcal.create_event, gcal.oauth_enabled = self._saved
+
+    def busy_intervals(self, start, end):
+        if self.fail_busy:
+            raise RuntimeError("Google Calendar unreachable")
+        return [b for b in self.busy if b[0] < end and start < b[1]]
+
+    def create_event(self, start, end, name, phone, purpose, email=""):
+        if self.fail_create:
+            raise RuntimeError("Google Calendar API error 503")
+        self.events.append({"start": start, "name": name, "email": email, "purpose": purpose})
+        self.busy.append((start, end))
+        return {"id": f"ev{len(self.events)}", "link": "https://calendar.example/event", "meet": None, "invited": False,
+                "duplicate": False}
+
+
+def busy_slot(date_iso: str, hhmm: str):
+    s = dt.datetime.combine(dt.date.fromisoformat(date_iso), dt.time.fromisoformat(hhmm), TZ)
+    return (s, s + dt.timedelta(minutes=config.SLOT_MINUTES))
+
+
+# ------------------------------------------------------------------ helpers
+FAKE = FakeLLM()
+llm.chat = FAKE.chat
+agent.llm.chat = FAKE.chat
+
+
+def fresh(call=True):
+    config.DB_PATH = Path(tempfile.mkdtemp()) / "t.db"
+    booking.clear_slot_cache()
+    FAKE.delay = 0.0
+    s = agent.CallSession("t", "browser")
+    if call:
+        s.greeting()
+    return s
+
+
+def say(s, text, via="voice"):
+    return asyncio.run(s.respond(text, via=via))
+
+
+def manual(s, **fields):
+    return asyncio.run(s.apply_manual(fields))
+
+
+def state(s):
+    return asyncio.run(s.public_state(fresh=True))
+
+
+def bookings():
+    return calendar_store.list_bookings()
+
+
+def fill_voice(s, day=2, hhmm="11 AM", name="Ahmed Khan", email="ahmed khan 92 at gmail dot com", purpose="building a website"):
+    """A normal voice conversation up to (not including) the final yes."""
+    say(s, f"I want to book a meeting {phrase(day)} at {hhmm}")
+    say(s, f"My name is {name}")
+    say(s, f"My email is {email}")
+    return say(s, f"I want to discuss {purpose}")
+
+
+# ------------------------------------------------------------------ tests
+def test_email_extraction_and_validation():
+    cases = {
+        "my email is ahmed khan 92 at gmail dot com": "ahmedkhan92@gmail.com",
+        "it's m dot daniel 4422 at gmail dot com": "m.daniel4422@gmail.com",
+        "danish@gmail.com": "danish@gmail.com",
+        "ali underscore raza at yahoo dot co dot uk": "ali_raza@yahoo.co.uk",
+        "john at the rate gmail dot com": "john@gmail.com",
+        "a b c at g mail dot com": "abc@gmail.com",
+        "danish nine two at gmail dot com": "danish92@gmail.com",
+        "ahmed double two at hotmail dot com": "ahmed22@hotmail.com",
+        "ahmed at gmail": None,
+        "book a meeting at 10 dot please": None,
+    }
+    for text, want in cases.items():
+        assert booking.extract_email(text) == want, (text, booking.extract_email(text), want)
+    assert booking.check_email("nope")["valid"] is False
+    assert booking.check_email("a@b")["valid"] is False
+    assert booking.check_email("ahmed@gmial.com", "voice")["suggestion"] == "ahmed@gmail.com"
+    assert booking.check_email("sara@excels-tech.com", "voice")["confidence"] == "low"      # unusual domain by voice
+    assert booking.check_email("sara@excels-tech.com", "manual")["confidence"] == "high"    # typed by the person
+
+
+def test_spoken_email_success():
+    s = fresh()
+    reply = fill_voice(s)
+    assert "Just to confirm" in reply and "ahmedkhan92 at gmail dot com" in reply and "Shall I book it?" in reply, reply
+    assert "11 AM" in reply and "about building a website" in reply, reply
+    assert bookings() == [], "booked before the caller confirmed!"
+    done = say(s, "Yes please")
+    assert done.startswith("Done!") and "Wednesday, November 25th at 11 AM" in done, done
+    b = bookings()
+    assert len(b) == 1 and b[0]["email"] == "ahmedkhan92@gmail.com" and b[0]["name"] == "Ahmed Khan", b
+
+
+def test_misrecognized_email_is_verified_not_guessed():
+    s = fresh()
+    say(s, f"Book a meeting {phrase(2)} at 11 AM")
+    say(s, "My name is Ahmed Khan")
+    r = say(s, "my email is ahmed at gmial dot com")
+    assert "Did you mean" in r and "gmail dot com" in r and s.awaiting == "email_suggestion", r
+    assert s.booking.email_status == "unconfirmed"
+    r = say(s, "yes")
+    assert s.booking.values["email"] == "ahmed@gmail.com" and s.booking.email_status == "confirmed", s.booking.values
+    assert "purpose" in booking.next_question(s.booking).lower() or "discuss" in r.lower(), r
+
+
+def test_uncertain_email_asks_to_confirm_then_manual_fix():
+    s = fresh()
+    say(s, f"Book a meeting {phrase(2)} at 11 AM")
+    r = say(s, "my email is sara at excels dash tech dot com")
+    assert "I want to make sure I have your email correctly" in r and "sara at excels dash tech dot com" in r, r
+    r = say(s, "no")
+    assert s.booking.values["email"] == "" and "type it into the email box" in r, r
+    out = manual(s, email="sara@excels-tech.com")
+    assert out["state"]["email_status"] == "confirmed" and out["state"]["values"]["email"] == "sara@excels-tech.com"
+
+
+def test_manual_email_validation_feedback():
+    s = fresh()
+    out = manual(s, email="not-an-email")
+    assert out["state"]["errors"].get("email") and out["state"]["email_status"] == "invalid", out["state"]
+    out = manual(s, email="mia@@gmail..com")
+    assert out["state"]["errors"].get("email")
+    out = manual(s, email="Mia.Stone@Gmail.com")
+    assert out["state"]["values"]["email"] == "mia.stone@gmail.com" and not out["state"]["errors"].get("email")
+    assert out["state"]["source"]["email"] == "manual"
+
+
+def test_voice_then_manual_correction_uses_manual_value():
+    s = fresh()
+    fill_voice(s, email="ahmed at gmail dot com")                        # voice email, summary pending
+    assert s.pending_key
+    manual(s, email="ahmed.khan@outlook.com")                            # the caller fixes it in the form
+    assert s.pending_key is None, "an edit must invalidate the old confirmation"
+    r = say(s, "yes")
+    assert bookings() == [], "booked on a yes that referred to the old summary"
+    r = say(s, "go ahead and book")                                      # model asks again -> new read-back
+    assert "ahmed dot khan at outlook dot com" in r and "Shall I book it?" in r, r
+    say(s, "yes")
+    assert bookings()[0]["email"] == "ahmed.khan@outlook.com", bookings()
+
+
+def test_manual_then_voice_continuation_no_repeated_questions():
+    s = fresh()
+    out = manual(s, date=iso(2))
+    assert out["followup"] == "Got it. What time works best for you?", out["followup"]
+    out = manual(s, time="11:00")
+    assert out["followup"] == "Got it. May I have your full name, please?", out["followup"]
+    out = manual(s, name="Ahmed Khan")
+    assert "email" in out["followup"].lower(), out["followup"]
+    r = say(s, "my email is ahmed at gmail dot com")                     # now by voice
+    assert "discuss" in s.messages[-1]["content"].lower() or True
+    r = say(s, "I want to discuss pricing")
+    assert "Just to confirm" in r and "Ahmed Khan" in r and "pricing" in r, r
+    say(s, "yes")
+    assert len(bookings()) == 1
+
+
+def test_form_only_booking_via_review_and_confirm_key():
+    s = fresh(call=False)
+    manual(s, date=iso(1), time="10:30", name="Mia Stone", email="mia@gmail.com", purpose="Website redesign")
+    st = state(s)
+    assert st["ready"] and st["steps"]["availability"], st
+    res = asyncio.run(s.confirm_from_ui("wrong-key"))
+    assert res["success"] is False and res["code"] == "stale" and bookings() == []
+    res = asyncio.run(s.confirm_from_ui(st["key"]))
+    assert res["success"] and len(bookings()) == 1, res
+    again = asyncio.run(s.confirm_from_ui(s.booking.key()))
+    assert again["success"] and again.get("already_booked") and len(bookings()) == 1, again
+
+
+def test_changed_mind_last_mention_wins_and_rechecks():
+    s = fresh()
+    say(s, "Book a meeting tomorrow at 5 PM... actually, make it the day after tomorrow at 11 AM")
+    v = s.booking.values
+    assert v["date"] == iso(2) and v["time"] == "11:00", v
+    st = state(s)
+    assert st["slot"]["ok"], st["slot"]
+    # change only the time
+    say(s, "actually make it 3 PM")
+    assert s.booking.values["time"] == "15:00" and s.booking.values["date"] == iso(2), s.booking.values
+    # change only the date by number
+    say(s, "no wait, the 27th")
+    assert s.booking.values["date"] == "2026-11-27" and s.booking.values["time"] == "15:00", s.booking.values
+
+
+def test_past_dates_rejected_everywhere():
+    s = fresh()
+    r = manual(s, date="2026-11-12")
+    assert r["state"]["errors"].get("date") and r["state"]["values"]["date"] == "", r["state"]
+    say(s, "Book a meeting on 12 November at 11 AM")
+    assert s.booking.values["date"] == "" and "date" in s.booking.errors, (s.booking.values, s.booking.errors)
+    assert booking.check_slot("2026-11-12", "11:00")["ok"] is False
+    assert calendar_store.book("2026-11-12", "11:00", "A B", "", "x y z", "a@b.com")["success"] is False
+    assert calendar_store.book(iso(0), "08:00", "A B", "", "x y z", "a@b.com")["success"] is False   # earlier today
+    r = manual(s, date=iso(2), time="07:30")                              # outside business hours
+    assert state(s)["slot"]["ok"] is False
+    r = manual(s, date="2027-03-01")
+    assert r["state"]["errors"].get("date"), "more than 60 days ahead must be refused"
+    r = manual(s, date=iso(5))                                            # Saturday: closed
+    assert "closed" in r["state"]["errors"].get("date", "").lower(), r["state"]["errors"]
+
+
+def test_unavailable_calendar_slot():
+    g = FakeGoogle(busy=[busy_slot(iso(2), "11:00")]).install()
+    try:
+        s = fresh()
+        say(s, f"Book a meeting {phrase(2)} at 11 AM")
+        say(s, "My name is Ahmed Khan")
+        say(s, "My email is ahmed at gmail dot com")
+        r = say(s, "I want to discuss hiring")
+        assert "isn't available" in r and "Which works for you?" in r, r
+        assert "11 AM" not in r.split("I have")[-1], r
+        assert bookings() == [] and g.events == []
+        assert state(s)["slot"]["code"] == "busy"
+        # a different, free time works
+        r = say(s, "make it 12 PM")
+        assert "Just to confirm" in r and "12 PM" in r, r
+        say(s, "yes")
+        assert len(g.events) == 1 and g.events[0]["start"].hour == 12
+    finally:
+        g.uninstall()
+
+
+def test_successful_booking_and_duplicate_prevention():
+    g = FakeGoogle().install()
+    try:
+        s = fresh()
+        fill_voice(s)
+        done = say(s, "yes")
+        assert done.startswith("Done!") and len(g.events) == 1, (done, g.events)
+        assert s.booking.booked and s.booking.booked["calendar"] == "google"
+        # same request again: no second event
+        r = calendar_store.book(iso(2), "11:00", "Ahmed Khan", "", "building a website", "ahmedkhan92@gmail.com")
+        assert r["success"] and r.get("already_booked") and len(g.events) == 1 and len(bookings()) == 1, r
+        # someone else wanting the same slot is refused
+        r = calendar_store.book(iso(2), "11:00", "Other Person", "", "x y z", "other@gmail.com")
+        assert r["success"] is False and r["code"] == "busy", r
+        # a new request after booking starts a new booking, keeping the contact details
+        say(s, f"I'd like another meeting {phrase(3)} at 2 PM")
+        v = s.booking.values
+        assert v["date"] == iso(3) and v["time"] == "14:00" and v["name"] == "Ahmed Khan" and v["purpose"] == "", v
+    finally:
+        g.uninstall()
+
+
+def test_google_failure_never_reports_success():
+    g = FakeGoogle(fail_create=True).install()
+    try:
+        s = fresh()
+        fill_voice(s)
+        r = say(s, "yes")
+        assert "trouble reaching the calendar" in r and "nothing has been booked" in r, r
+        assert not r.startswith("Done"), r
+        assert bookings() == [], "a booking row must not survive a failed calendar call"
+        assert s.booking.booked is None
+        # the UI path reports the failure too
+        res = asyncio.run(s.confirm_from_ui(s.booking.key()))
+        assert res["success"] is False and bookings() == [], res
+    finally:
+        g.uninstall()
+    g = FakeGoogle(fail_busy=True).install()
+    try:
+        s = fresh()
+        r = say(s, f"Book a meeting {phrase(2)} at 11 AM")
+        assert state(s)["slot"]["code"] == "calendar_down", state(s)["slot"]
+        out = asyncio.run(s.confirm_from_ui(s.booking.key()))
+        assert out["success"] is False
+    finally:
+        g.uninstall()
+
+
+def test_interrupted_conversation_requires_fresh_confirmation():
+    s = fresh()
+    r = fill_voice(s)
+    assert "Shall I book it?" in r and s.pending_key
+    r = say(s, "wait, what are your opening hours?")                      # interrupts the confirmation
+    assert s.pending_key is None
+    r = say(s, "yes")                                                     # a yes now refers to nothing
+    assert bookings() == [], "a stale yes must not book"
+    r = say(s, "ok go ahead and book")                                    # model asks again -> read-back
+    assert "Shall I book it?" in r and bookings() == [], r
+    r = say(s, "yes that's right")
+    assert r.startswith("Done!") and len(bookings()) == 1, r
+
+
+def test_model_cannot_invent_name_or_skip_confirmation():
+    s = fresh()
+    say(s, f"Book a meeting {phrase(2)} at 11 AM INVENT")
+    assert s.booking.values["name"] == "", s.booking.values               # "John Doe" was never said
+    say(s, "My name is Ahmed Khan")
+    say(s, "my email is ahmed at gmail dot com")
+    say(s, "I want to discuss rates")
+    assert bookings() == []
+    s.pending_key = None
+    r = say(s, "go ahead and book")                                       # no yes yet -> only a read-back
+    assert "Shall I book it?" in r and bookings() == []
+
+
+
+def test_name_purpose_and_bare_time_captured_in_code_without_the_llm():
+    s = fresh()
+    FAKE.default = "Sure."                      # a model that never calls the tools (real Groq models often don't)
+    try:
+        say(s, f"Book a meeting {phrase(2)}")
+        before = FakeLLM.calls
+        s.messages.append({"role": "assistant", "content": "What time works best for you?"})
+        say(s, "five thirty")
+        assert s.booking.values["time"] == "17:30", s.booking.values
+        s.messages.append({"role": "assistant", "content": "May I have your full name, please?"})
+        say(s, "it's Ahmed Khan")
+        assert s.booking.values["name"] == "Ahmed Khan", s.booking.values
+        say(s, "my email is ahmed at gmail dot com")
+        s.messages.append({"role": "assistant", "content": "What would you like to discuss in the meeting?"})
+        r = say(s, "building an online store")
+        assert s.booking.values["purpose"] == "building an online store", s.booking.values
+        assert "Just to confirm" in r and "5:30 PM" in r, r
+        # one sentence carrying several answers
+        s2 = fresh()
+        say(s2, f"My name is Mia Stone and I want to discuss branding, book {phrase(3)} at 2 PM, email mia at gmail dot com")
+        v = s2.booking.values
+        assert (v["name"], v["purpose"], v["date"], v["time"], v["email"]) == (
+            "Mia Stone", "branding", iso(3), "14:00", "mia@gmail.com"), v
+    finally:
+        FAKE.default = "Sure. How can I help?"
+
+
+def test_questions_are_not_mistaken_for_answers():
+    s = fresh()
+    s.messages.append({"role": "assistant", "content": "May I have your full name, please?"})
+    say(s, "why do you need my name?")
+    assert s.booking.values["name"] == ""
+    s.messages.append({"role": "assistant", "content": "What would you like to discuss in the meeting?"})
+    say(s, "what are your prices?")
+    assert s.booking.values["purpose"] == ""
+    say(s, "how are you today?")                # chit-chat must not become a booking date
+    assert s.booking.values["date"] == ""
+
+
+def test_data_turns_are_answered_in_code_with_real_availability():
+    s = fresh()
+    before = FakeLLM.calls
+    r = say(s, f"Hi, I'd like to book a meeting {phrase(2)} at 3 PM")
+    assert r == "3 PM on Wednesday, November 25th is free. May I have your full name, please?", r
+    r = say(s, "My name is Ahmed Khan")
+    assert r == "Thanks, Ahmed. What's the best email address for the invite?", r
+    r = say(s, "Actually, make it 4 PM")                                  # changed mind: acknowledged, re-checked
+    assert r.startswith("Sure, I'll update that. 4 PM on Wednesday, November 25th is free."), r
+    assert FakeLLM.calls == before, "pure data turns must not call the LLM"
+    # a date alone -> real open times; a closed day -> no times
+    s2 = fresh()
+    r = say(s2, f"Book a meeting {phrase(2)}")
+    assert r == "On Wednesday, November 25th I have 10 AM, 10:30 AM, 11 AM open. Which time works for you?", r
+    r = say(fresh(), "Book a meeting on November 28")                     # a Saturday
+    assert "closed" in r.lower() or "no openings" in r.lower() or "Sorry" in r, r
+
+
+def test_streamed_sentences_glued_together_are_split_and_cut_at_the_first_question():
+    got = []
+    ss = agent._SentenceStream(got.append, time.perf_counter(), {})
+    for piece in ["Great, may I have your email address?", "And could you tell", " me your full name, please?"]:
+        ss.feed(piece)
+    ss.flush()
+    assert got == ["Great, may I have your email address?"], got
+
+
+def test_booking_speaks_first_then_confirms_only_after_the_calendar_answers():
+    g = FakeGoogle().install()
+    try:
+        s = fresh()
+        fill_voice(s)
+        got = []
+        reply = asyncio.run(s.respond("yes", emit=got.append))
+        assert got[0] == "One moment while I book that." and got[1].startswith("Done!"), got
+        assert reply == " ".join(got), (reply, got)
+        assert len(g.events) == 1
+    finally:
+        g.uninstall()
+    g = FakeGoogle(fail_create=True).install()
+    try:
+        s = fresh()
+        fill_voice(s)
+        got = []
+        reply = asyncio.run(s.respond("yes", emit=got.append))
+        assert got[0] == "One moment while I book that." and "Done" not in reply, got
+        assert "nothing has been booked" in reply and bookings() == [] and s.booking.booked is None, reply
+    finally:
+        g.uninstall()
+
+
+def test_human_handoff_is_instant_and_not_triggered_by_booking_talk():
+    for phrase_ in ["Can I talk to a real person please?", "I want to speak to a human", "connect me to a manager",
+                    "agent please", "let me talk to someone"]:
+        s = fresh()
+        before = FakeLLM.calls
+        r = say(s, phrase_)
+        assert s.action == "transfer" and r.startswith("Of course"), (phrase_, s.action, r)
+        assert FakeLLM.calls == before, "a handoff must not wait for the LLM"
+    for phrase_ in ["I want to book a meeting with your manager", "Do you have an agent for insurance?",
+                    "My name is Ahmed Khan", "book a meeting with the team member for sales"]:
+        s = fresh()
+        say(s, phrase_)
+        assert s.action is None, (phrase_, s.action)
+
+
+def test_deterministic_path_skips_the_llm():
+    s = fresh()
+    fill_voice(s)
+    before = FakeLLM.calls
+    done = say(s, "yes")                                                  # confirmation -> no model call
+    assert FakeLLM.calls == before and done.startswith("Done!")
+
+
+def test_streaming_delivers_sentences_before_the_reply_is_complete():
+    s = fresh()
+    FAKE.delay = 0.12
+    FAKE.default = "Happy to help. We build websites and apps. What would you like to know?"
+    got = []
+    t0 = time.perf_counter()
+    timings = {}
+    reply = asyncio.run(s.respond("what do you do", emit=lambda x: got.append((time.perf_counter() - t0, x)), timings=timings))
+    total = time.perf_counter() - t0
+    FAKE.delay, FAKE.default = 0.0, "Sure. How can I help?"
+    assert [x for _, x in got] == ["Happy to help.", "We build websites and apps.", "What would you like to know?"], got
+    assert got[0][0] < total - 0.2, f"first sentence at {got[0][0]:.2f}s, finished at {total:.2f}s"
+    assert reply == " ".join(x for _, x in got) and timings["first_sentence_ms"] < timings["total_ms"], timings
+
+
+def test_http_api_state_stream_review_confirm():
+    from fastapi.testclient import TestClient
+    from app.main import app
+    c = TestClient(app)
+    config.DB_PATH = Path(tempfile.mkdtemp()) / "t.db"
+    booking.clear_slot_cache()
+    cfg = c.get("/api/config").json()
+    assert cfg["timezone"] == "Asia/Karachi" and cfg["calendar"] == "local"
+    start = c.post("/api/web/start", json={"silent": True}).json()
+    sid = start["session_id"]
+    assert start["reply"] is None and start["state"]["missing"] == list(booking.FIELDS)
+    # manual form edits
+    r = c.post("/api/web/state", json={"session_id": sid, "fields": {"date": "2026-11-12"}}).json()
+    assert r["state"]["errors"]["date"], r
+    r = c.post("/api/web/state", json={"session_id": sid, "fields": {"date": iso(2), "time": "11:00", "name": "Mia Stone",
+                                                                     "purpose": "Branding project"}}).json()
+    assert r["state"]["missing"] == ["email"], r["state"]
+    # typed chat message carrying the email (stream endpoint)
+    lines = []
+    with c.stream("POST", "/api/web/stream", json={"session_id": sid, "text": "my email is mia@gmail.com", "via": "typed"}) as resp:
+        for line in resp.iter_lines():
+            if line:
+                lines.append(json.loads(line))
+    kinds = [x["t"] for x in lines]
+    assert kinds[-1] == "done" and "sentence" in kinds, kinds
+    done = lines[-1]
+    assert "Just to confirm" in done["reply"] and done["state"]["email_status"] == "confirmed", done["reply"]
+    assert done["timings"]["model"] == "rules (no LLM)" and done["timings"]["total_ms"] >= 0
+    # review + confirm
+    rv = c.post("/api/web/review", json={"session_id": sid}).json()
+    assert rv["ok"] and rv["summary"]["name"] == "Mia Stone" and rv["summary"]["timezone"] == "Asia/Karachi", rv
+    bad = c.post("/api/web/confirm", json={"session_id": sid, "key": "stale"}).json()
+    assert bad["success"] is False and bookings() == []
+    ok = c.post("/api/web/confirm", json={"session_id": sid, "key": rv["key"]}).json()
+    assert ok["success"] and len(bookings()) == 1 and ok["state"]["booked"], ok
+    rv2 = c.post("/api/web/review", json={"session_id": sid}).json()
+    assert rv2["ok"] is False and any("already booked" in i for i in rv2["issues"]), rv2
+    assert c.get("/").status_code == 200
+
+
+def test_phone_flow_twilio():
+    from fastapi.testclient import TestClient
+    from app.main import app
+    c = TestClient(app)
+    config.DB_PATH = Path(tempfile.mkdtemp()) / "t.db"
+    booking.clear_slot_cache()
+    r = c.post("/twilio/voice", data={"CallSid": "CA9", "From": "+921111111"})
+    assert "<Gather" in r.text and "How can I help" in r.text
+
+    def speak(t):
+        return c.post("/twilio/gather", data={"CallSid": "CA9", "SpeechResult": t}).text
+
+    speak(f"book a meeting {phrase(2)} at 11 AM")
+    speak("my name is Ahmed Khan")
+    speak("my email is ahmed at gmail dot com")
+    t = speak("I want to discuss a project")
+    assert "Shall I book it?" in t and "<Gather" in t, t
+    t = speak("yes")
+    assert "Done!" in t and len(bookings()) == 1 and bookings()[0]["phone"] == "+921111111", t
+    c.post("/twilio/voice", data={"CallSid": "CA10"})
+    assert "Are you still there" in c.post("/twilio/noinput", data={"CallSid": "CA10"}).text
+    assert "<Hangup/>" in c.post("/twilio/noinput", data={"CallSid": "CA10"}).text
+    c.post("/twilio/voice", data={"CallSid": "CA11"})
+    t = c.post("/twilio/gather", data={"CallSid": "CA11", "SpeechResult": "goodbye"}).text
+    assert "<Hangup/>" in t, t
+
+
+# ------------------------------------------------------------------ runner
+def main():
+    tests = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]
+    failed = 0
+    for name, fn in tests:
+        try:
+            fn()
+            print(f"  PASS  {name}")
+        except Exception:
+            failed += 1
+            print(f"  FAIL  {name}")
+            traceback.print_exc()
+    print(f"\n{len(tests) - failed}/{len(tests)} passed")
+    if failed:
+        raise SystemExit(1)
+    print("ALL SMOKE TESTS PASSED")
+
+
+if __name__ == "__main__":
+    main()

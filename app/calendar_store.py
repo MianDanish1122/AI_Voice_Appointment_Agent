@@ -136,7 +136,7 @@ def book(date: str, time: str, name: str, phone: str = "", purpose: str = "", em
     if start.isoformat() not in valid:
         return {"success": False, "error": "That time is not a valid slot (outside working hours or not on slot boundary)."}
     if start <= now():
-        return {"success": False, "error": "That time is in the past."}
+        return {"success": False, "error": "That time is in the past.", "code": "past"}
     try:
         with _conn() as c:
             c.execute(
@@ -144,25 +144,35 @@ def book(date: str, time: str, name: str, phone: str = "", purpose: str = "", em
                 (start.isoformat(), name, phone, purpose, now().isoformat(), email),
             )
     except sqlite3.IntegrityError:
-        return {"success": False, "error": "Slot already booked.", "alternatives": available_slots(date).get("available", [])[:5]}
+        with _conn() as c:
+            row = c.execute("SELECT name, email FROM bookings WHERE start = ?", (start.isoformat(),)).fetchone()
+        if row and (row["email"] or "").lower() == email.lower() and (row["name"] or "").lower() == name.lower():
+            # the very same appointment (double click / retry): report success, never create a second one
+            return {"success": True, "already_booked": True, "date": day.isoformat(), "time": start.strftime("%H:%M"),
+                    "weekday": day.strftime("%A"), "name": name, "invite_sent": False,
+                    "calendar": "google" if gcal.enabled() else "local"}
+        return {"success": False, "error": "Slot already booked.", "code": "busy",
+                "alternatives": available_slots(date).get("available", [])[:5]}
 
-    invite_sent = False
+    invite_sent, event_link, meet_link = False, None, None
     if gcal.enabled():
         end = start + dt.timedelta(minutes=config.SLOT_MINUTES)
         try:
             if gcal.busy_intervals(start, end):
                 _delete(start)
-                return {"success": False, "error": "Slot already busy in calendar.",
+                return {"success": False, "error": "Slot already busy in calendar.", "code": "busy",
                         "alternatives": available_slots(date).get("available", [])[:5]}
             ev = gcal.create_event(start, end, name, phone, purpose, email)
             log.info("Google Calendar event created: %s (invite sent: %s)", ev.get("link"), ev.get("invited"))
             invite_sent = bool(ev.get("invited"))
+            event_link, meet_link = ev.get("link"), ev.get("meet")
         except Exception as e:
             log.exception("Google Calendar booking failed")
             _delete(start)
-            return {"success": False, "error": f"Calendar error, booking not saved: {e}"}
-    return {"success": True, "date": date, "time": start.strftime("%H:%M"), "weekday": day.strftime("%A"), "name": name,
-            "invite_sent": invite_sent}
+            return {"success": False, "error": f"Calendar error, booking not saved: {e}", "code": "calendar_error"}
+    return {"success": True, "date": day.isoformat(), "time": start.strftime("%H:%M"), "weekday": day.strftime("%A"),
+            "name": name, "invite_sent": invite_sent, "event_link": event_link, "meet_link": meet_link,
+            "calendar": "google" if gcal.enabled() else "local"}
 
 
 def _delete(start: dt.datetime):

@@ -10,3 +10,4 @@ __pycache__/
 *.pyc
 *.mp4
 *.mov
+tests/screens/
