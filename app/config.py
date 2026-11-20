@@ -42,6 +42,13 @@ GOOGLE_SERVICE_ACCOUNT_JSON = env("GOOGLE_SERVICE_ACCOUNT_JSON")  # full JSON te
 GOOGLE_OAUTH_TOKEN_FILE = env("GOOGLE_OAUTH_TOKEN_FILE", "google_token.json")
 GOOGLE_OAUTH_TOKEN_JSON = env("GOOGLE_OAUTH_TOKEN_JSON")
 
+# Confirmation email to the caller (any SMTP account; Gmail: smtp.gmail.com:587 + an App Password). Empty = no email is sent.
+SMTP_HOST = env("SMTP_HOST")
+SMTP_PORT = int(env("SMTP_PORT", "587") or 587)
+SMTP_USER = env("SMTP_USER")
+SMTP_PASSWORD = env("SMTP_PASSWORD").replace(" ", "")      # Google shows App Passwords in groups of four
+MAIL_FROM = env("MAIL_FROM")
+
 # Optional Vapi path (managed voice platform): Vapi does speech + phone, this server provides the booking tools.
 VAPI_API_KEY = env("VAPI_API_KEY")                  # private key: only used by scripts/vapi_setup.py
 VAPI_PUBLIC_KEY = env("VAPI_PUBLIC_KEY")            # browser key (meant to be public)

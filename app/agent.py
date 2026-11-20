@@ -13,7 +13,7 @@ import logging
 import re
 import time
 
-from . import calendar_store, callog, config, gcal, llm
+from . import calendar_store, callog, config, gcal, llm, mailer
 from .booking import (FIELDS, BookingState, check_slot, clear_slot_cache, extract_email, next_question,
                       normalize_email, ordinal, pretty_when, spoken_email)
 from .kb import kb
@@ -510,7 +510,8 @@ class CallSession:
     def _result_reply(self, res: dict) -> str:
         if res.get("success"):
             when = pretty_when(res["date"], res["time"])
-            inv = " I've sent a calendar invite to your email." if res.get("invite_sent") else ""
+            inv = (" I've sent a calendar invite to your email." if res.get("invite_sent")
+                   else " I've also emailed you the details with a link to add it to your calendar." if res.get("email_sent") else "")
             pre = "That meeting is already on the calendar. " if res.get("already_booked") else "Done! "
             return f"{pre}Your meeting is booked for {when}.{inv} Is there anything else I can help you with?"
         err = res.get("error", "")
@@ -522,6 +523,16 @@ class CallSession:
             return ("I'm having trouble reaching the calendar right now, so nothing has been booked. "
                     "Would you like to try again in a moment?")
         return f"Sorry, I couldn't book that. {err} Would you like to try a different time?"
+
+    def _email_confirmation(self, res: dict) -> bool:
+        """Mail the booking (details + add-to-calendar link + .ics) to the caller. False if mail is off or failed."""
+        if not mailer.enabled():
+            return False
+        v = self.booking.values
+        start = dt.datetime.combine(dt.date.fromisoformat(res["date"]), dt.time.fromisoformat(res["time"]), calendar_store.TZ)
+        end = start + dt.timedelta(minutes=config.SLOT_MINUTES)
+        msg = mailer.build(v["email"], v["name"], pretty_when(res["date"], res["time"]), v["purpose"], start, end, res.get("meet_link"))
+        return mailer.send(msg)
 
     def _finalize_sync(self) -> dict:
         """The only place that books. Re-validates everything; success is reported only after the calendar API confirmed."""
@@ -540,6 +551,8 @@ class CallSession:
             st.booked["email"] = v["email"]
             st.booked["purpose"] = v["purpose"]
             st.booked["when"] = pretty_when(res["date"], res["time"])
+            if not res.get("already_booked"):
+                st.booked["email_sent"] = res["email_sent"] = self._email_confirmation(res)
             clear_slot_cache()
             self.pending_key = self.awaiting = None
         return res

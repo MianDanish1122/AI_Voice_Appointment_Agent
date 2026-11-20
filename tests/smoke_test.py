@@ -343,6 +343,42 @@ def test_successful_booking_and_duplicate_prevention():
         g.uninstall()
 
 
+def test_confirmation_email_is_sent_after_booking_only_when_mail_works():
+    from app import mailer
+    sent = []
+    keep = (config.SMTP_HOST, config.SMTP_USER, config.SMTP_PASSWORD, mailer.send)
+    g = FakeGoogle().install()
+    try:
+        config.SMTP_HOST, config.SMTP_USER, config.SMTP_PASSWORD = "smtp.example", "agent@example.com", "x"
+        mailer.send = lambda msg: (sent.append(msg), True)[1]
+        s = fresh()
+        fill_voice(s)
+        assert not sent, "no email before the caller says yes"
+        done = say(s, "yes")
+        assert done.startswith("Done!") and "emailed you the details" in done, done
+        assert len(sent) == 1 and s.booking.booked["email_sent"] is True
+        m = sent[0]
+        body = m.get_body(("plain",)).get_content()
+        assert m["To"] == "ahmedkhan92@gmail.com" and "Booking confirmed" in m["Subject"], (m["To"], m["Subject"])
+        assert "calendar.google.com/calendar/render?action=TEMPLATE" in body and "Ahmed" in body and "building a website" in body, body
+        ics = next(m.iter_attachments()).get_content()
+        assert "BEGIN:VEVENT" in ics and "DTSTART:" in ics, ics
+        say(s, "yes")                                            # repeating the yes must not send a second mail
+        assert len(sent) == 1
+        # mail server down: the booking stays booked and the agent does not claim an email was sent
+        mailer.send = lambda msg: False
+        g2 = fresh()
+        fill_voice(g2, day=3)
+        done2 = say(g2, "yes")
+        assert done2.startswith("Done!") and "emailed" not in done2 and g2.booking.booked["email_sent"] is False, done2
+        # no SMTP settings at all: silently no email
+        config.SMTP_HOST = ""
+        assert mailer.enabled() is False
+    finally:
+        config.SMTP_HOST, config.SMTP_USER, config.SMTP_PASSWORD, mailer.send = keep
+        g.uninstall()
+
+
 def test_google_failure_never_reports_success():
     g = FakeGoogle(fail_create=True).install()
     try:

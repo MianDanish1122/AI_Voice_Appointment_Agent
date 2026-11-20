@@ -21,6 +21,9 @@ Groq / Gemini free LLMs, the browser's speech APIs, free Microsoft neural voices
   (or the confirm API for exactly the summary shown), then the real event is created. **Success is shown only
   after Google confirms.** Booking is idempotent (deterministic event id, unique slot) so a double click or retry cannot
   create a second event, and a failed calendar call never leaves a half-booking behind.
+- **Confirmation email.** After the booking is confirmed by Google, the caller gets an email (details + an "add to Google
+  Calendar" link + an `.ics` file) via any SMTP account (`SMTP_*` in `.env`; free with a Gmail App Password). The agent says
+  it emailed you only if the mail server accepted it; a mail failure never undoes a booking. No SMTP settings = no email.
 - **Call history.** Every conversation (who said what, how it ended: booked / no booking / transferred) is saved as a text
   transcript in SQLite (`app/callog.py`); the **history** button lists this browser's own calls and shows the full
   conversation. No audio is stored, and a visitor can only fetch the call ids their own browser created.
@@ -112,7 +115,7 @@ URL), and Vapi bills calls against your Vapi credits.
 ## Tests
 
 ```powershell
-.\.venv\Scripts\python -m tests.smoke_test      # 31 offline tests (fake LLM + fake Google + design lint), ~10 s
+.\.venv\Scripts\python -m tests.smoke_test      # 32 offline tests (fake LLM + fake Google + design lint), ~10 s
 .\.venv\Scripts\pip install -r requirements-dev.txt
 .\.venv\Scripts\python -m tests.ui_test         # 14 real-Chrome tests of the voice page + backend (incl. fit-to-screen on 8 window sizes) (screens in tests/screens/)
 .\.venv\Scripts\python -m tests.live_e2e_test   # real LLM + REAL Google Calendar: books, verifies, deletes the test event

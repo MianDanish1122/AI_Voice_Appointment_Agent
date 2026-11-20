@@ -842,7 +842,7 @@ function renderSuccess(st) {
   $('successKind').textContent = b.calendar === 'google' ? 'BOOKED · CONFIRMED BY GOOGLE CALENDAR' : 'SAVED · LOCAL CALENDAR ONLY';
   const dl = $('successDl'); dl.innerHTML = '';
   [['WHEN', b.when]].forEach(([k, val]) => { const dt = document.createElement('dt'), dd = document.createElement('dd'); dt.textContent = k; dd.textContent = val || '—'; dl.append(dt, dd); });
-  const links = $('successLinks'); links.textContent = b.invite_sent ? 'a calendar invite was sent to your email. ' : '';
+  const links = $('successLinks'); links.textContent = b.invite_sent ? 'a calendar invite was sent to your email. ' : b.email_sent ? 'the details were emailed to ' + (b.email || 'you') + '. ' : '';
   if (b.event_link) { const a = document.createElement('a'); a.href = b.event_link; a.target = '_blank'; a.rel = 'noopener'; a.textContent = 'open in google calendar'; links.appendChild(a); }
 }
 function render(st) {
