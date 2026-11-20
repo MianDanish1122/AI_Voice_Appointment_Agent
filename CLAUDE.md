@@ -16,8 +16,8 @@ Evaluators will try tricky phrases ("tomorrow 5 PM… no, day after at 11", Sund
 ```powershell
 python -m venv .venv ; .\.venv\Scripts\pip install -r requirements.txt ; copy .env.example .env   # fill keys
 .\.venv\Scripts\python -m uvicorn app.main:app --port 8000      # http://localhost:8000 in Chrome/Edge
-.\.venv\Scripts\python -m tests.smoke_test      # 25 offline tests, fake LLM + fake Google. MUST pass before every commit
-.\.venv\Scripts\python -m tests.ui_test         # 8 real-Chrome tests (needs: pip install -r requirements-dev.txt; uses installed Chrome)
+.\.venv\Scripts\python -m tests.smoke_test      # 29 offline tests, fake LLM + fake Google. MUST pass before every commit
+.\.venv\Scripts\python -m tests.ui_test         # 9 real-Chrome tests (UI_ONLY=<name part> runs a subset; needs: pip install -r requirements-dev.txt; uses installed Chrome)
 .\.venv\Scripts\python -m tests.live_e2e_test   # real LLM + REAL Google Calendar; creates a test event, verifies, deletes it
 .\.venv\Scripts\python -m tests.live_chat_test  # real LLM answers
 ```
@@ -31,6 +31,7 @@ events named "Upgrade Check" / "Profile Probe" in the owner's calendar and delet
 - `app/llm.py` — provider chain Groq `openai/gpt-oss-120b` → Gemini 2.5 Flash → smaller Groq models; 429 cooldown; empty answer = failure; SSE streaming; shared HTTP client + warm-up.
 - `app/gcal.py` — Google REST over a shared `httpx.Client`; deterministic event id ⇒ idempotent create (409 ⇒ reuse; cancelled ⇒ restore); service account, or OAuth token ⇒ real invites + Meet.
 - `app/calendar_store.py` — slots + bookings in SQLite (`UNIQUE(start)`), merges Google freeBusy, idempotent for the same name+email.
+- `app/vapi.py` + `scripts/vapi_setup.py` — OPTIONAL Vapi engine (Vapi owns STT/LLM/TTS/phone and calls our webhook `POST /api/vapi/webhook` for tools `update_booking_details` / `check_available_slots` / `book_appointment`). The caller's words arrive in `artifact.messages` / `conversation-update` and go through the same `CallSession._deterministic()` rules; tool results are flat JSON strings with a `say` field the Vapi LLM must read verbatim; the page passes its session id as `variableValues.sid` (+ `/api/vapi/link`). Keys in `.env`: `VAPI_API_KEY` (private, setup script only), `VAPI_PUBLIC_KEY`, `VAPI_ASSISTANT_ID`, `VAPI_WEBHOOK_SECRET`. NOT yet run against a live Vapi call (needs the public URL) and the assistant/tools are NOT created in the owner's Vapi account yet (`python -m scripts.vapi_setup --server-url https://<host>` after deploying). Unverified against Vapi's live API: transcriber/voice ids, tool PATCH shape, `{{"now" | date: ...}}` liquid in the prompt, web SDK `start(id, overrides)` signature and returned call id.
 - `static/index.html` — the whole UI (voice orb visualizer, transcript, editable form, progress stepper, review dialog). `window.__app` is exposed for tests.
 
 ## Rules that matter (don't weaken them — weak/rate-limited models rely on them)
@@ -47,8 +48,9 @@ events named "Upgrade Check" / "Profile Probe" in the owner's calendar and delet
 - Google `events.insert` takes ~1.4 s by itself, so the agent says "One moment while I book that." first.
 
 ## Status / open items
-Done & verified (offline 25/25, real-Chrome 8/8, live E2E with real Groq/Gemini + real Google Calendar): everything in README "What it does".
+Done & verified (offline 29/29, real-Chrome 9/9, live E2E with real Groq/Gemini + real Google Calendar): everything in README "What it does".
 Still open:
+0. **Vapi** (optional): after deploying run `scripts/vapi_setup`, set the 3 env vars on the host, then make ONE real test call and fix whatever the live API disagrees with (see the unverified list above). Vapi credits are the owner's money: don't loop test calls.
 1. **No public live link yet** (most important). Deploy this repo (Dockerfile present) to Hugging Face Spaces / Render with the `.env` values as secrets (`GOOGLE_SERVICE_ACCOUNT_JSON` = key text). Point the Twilio webhook at `<url>/twilio/voice` (trial: verified numbers only; the web link is the safe deliverable).
 2. Real microphone behaviour (echo filter, barge-in, email n-best re-ranking, neural voice quality) is only verified with a mocked recognizer — needs a human with headphones in Chrome/Edge.
 3. Calendar **invites to the caller's email** need the OAuth step (`client_secret.json` → `python -m scripts.google_login`); until then the email is only in the event description.

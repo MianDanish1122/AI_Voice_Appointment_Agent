@@ -42,6 +42,12 @@ GOOGLE_SERVICE_ACCOUNT_JSON = env("GOOGLE_SERVICE_ACCOUNT_JSON")  # full JSON te
 GOOGLE_OAUTH_TOKEN_FILE = env("GOOGLE_OAUTH_TOKEN_FILE", "google_token.json")
 GOOGLE_OAUTH_TOKEN_JSON = env("GOOGLE_OAUTH_TOKEN_JSON")
 
+# Optional Vapi path (managed voice platform): Vapi does speech + phone, this server provides the booking tools.
+VAPI_API_KEY = env("VAPI_API_KEY")                  # private key: only used by scripts/vapi_setup.py
+VAPI_PUBLIC_KEY = env("VAPI_PUBLIC_KEY")            # browser key (meant to be public)
+VAPI_ASSISTANT_ID = env("VAPI_ASSISTANT_ID")        # written by scripts/vapi_setup.py
+VAPI_WEBHOOK_SECRET = env("VAPI_WEBHOOK_SECRET")    # sent by Vapi as X-Vapi-Secret; set it in production
+
 STT_LANGUAGE = env("STT_LANGUAGE", "en-US")
 TTS_VOICE = env("TTS_VOICE", "Polly.Joanna-Neural")
 TTS_LANGUAGE = env("TTS_LANGUAGE", "en-US")

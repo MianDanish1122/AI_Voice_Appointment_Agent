@@ -79,6 +79,7 @@
   select:focus, input:focus, textarea:focus { outline:none; box-shadow:var(--ring); border-color:transparent; }
   .check { display:flex; gap:9px; align-items:flex-start; margin-top:12px; font-size:13px; color:var(--muted); }
   .check input { accent-color:var(--primary); margin-top:3px; }
+  .hint { margin-top:6px; font-size:12px; color:var(--muted); line-height:1.4; }
   .latency { margin-top:16px; padding:10px 12px; border-radius:12px; background:var(--surface2); font-size:12.5px; color:var(--muted); }
   .latency b { color:var(--text); font-variant-numeric:tabular-nums; }
 
@@ -181,7 +182,10 @@
       <button class="btn ghost" id="micBtn" type="button" disabled aria-pressed="true" aria-label="Microphone"><span id="micBtnText">Mic on</span></button>
     </div>
     <div class="meter" aria-hidden="true"><span id="micState">Mic idle</span><div class="bar"><b id="micLevel"></b></div></div>
-    <div class="setting"><label for="voice">Agent voice</label>
+    <div class="setting" id="engineRow" hidden><label for="engine">Voice engine</label>
+      <select id="engine"><option value="builtin">Built-in (free, runs in this app)</option><option value="vapi">Vapi voice (managed platform)</option></select>
+      <div class="hint">Vapi runs the call; the booking rules, form and Google Calendar stay exactly the same.</div></div>
+    <div class="setting" id="voiceRow"><label for="voice">Agent voice</label>
       <select id="voice"><option value="natural">Natural (neural)</option></select></div>
     <label class="check"><input type="checkbox" id="bargeIn" checked><span>Let me interrupt the agent (works best with headphones)</span></label>
     <div class="latency" id="latency" title="Measured on the server. Speech recognition and voice playback add a little on top.">No reply yet — latency appears here after the first answer.</div>
@@ -608,7 +612,35 @@ async function agentSay(text) {
 }
 
 /* ------------------------------------------------------------------ call control */
+/* ---- optional Vapi engine: Vapi runs the call, our server keeps the booking rules and state; the form follows by polling */
+let vapi = null, vapiPoll = null;
+async function startVapiCall() {
+  S.call = true; S.vapi = true; setPhase('thinking');
+  $('callBtnText').textContent = 'End call'; $('callBtn').classList.add('danger'); $('micBtn').disabled = true;
+  status('Connecting to Vapi…', 'thinking'); showHeard('');
+  try {
+    await ensureSession(true);                                    // the form and the call share this session
+    const mod = await import('https://esm.sh/@vapi-ai/web@2');
+    const Vapi = mod.default || mod.Vapi;
+    vapi = new Vapi(S.cfg.vapi.public_key);
+    vapi.on('call-start', () => { status('Connected — say hello', 'listening'); });
+    vapi.on('speech-start', () => status('Agent is speaking…', 'speaking'));
+    vapi.on('speech-end', () => status('Listening… speak now', 'listening'));
+    vapi.on('call-end', () => { if (S.call) endCall(true); });
+    vapi.on('error', e => { note('Vapi error: ' + ((e && (e.errorMsg || e.message)) || 'see console'), 'bad'); console.warn(e); });
+    vapi.on('message', m => {
+      if (!m || m.type !== 'transcript') return;
+      if (m.transcriptType === 'final') { addBubble(m.role === 'assistant' ? 'agent' : 'user', m.transcript, m.role === 'assistant' ? null : 'voice'); showHeard(''); }
+      else if (m.role === 'user') showHeard('🎙 ' + m.transcript);
+    });
+    // variableValues.sid fills {{sid}} in the assistant's prompt, so every tool call carries our session id
+    const call = await vapi.start(S.cfg.vapi.assistant_id, { variableValues: { sid: S.sid } });
+    if (call && call.id) api('/api/vapi/link', { call_id: call.id, session_id: S.sid }).catch(() => {});
+    vapiPoll = setInterval(resync, 1200);                         // the webhook fills the form; we mirror it live
+  } catch (e) { note('Could not start the Vapi call: ' + (e.message || e), 'bad'); endCall(true); }
+}
 async function startCall() {
+  if (S.cfg.vapi && S.cfg.vapi.enabled && $('engine').value === 'vapi') return startVapiCall();
   S.call = true; S.interrupted = false; setPhase('thinking');
   $('callBtnText').textContent = 'End call'; $('callBtn').classList.add('danger'); $('micBtn').disabled = false;
   S.micOn = true; updateMicUI(); status('Connecting…', 'thinking'); showHeard('');
@@ -622,6 +654,7 @@ async function startCall() {
 async function endCall(fromAgent) {
   if (!S.call && !fromAgent) return;
   S.call = false; clearTimeout(silenceTimer); stopSpeaking(); killRec(); if (S.ctrl) { S.interrupted = true; S.ctrl.abort(); }
+  if (S.vapi) { S.vapi = false; clearInterval(vapiPoll); try { vapi && vapi.stop(); } catch (_) {} vapi = null; }
   setPhase('idle'); $('callBtnText').textContent = 'Start call'; $('callBtn').classList.remove('danger'); $('micBtn').disabled = true;
   status('Call ended', 'idle'); showHeard('The form and chat still work — you can keep typing.'); updateMicUI();
   if (!fromAgent) note('You ended the call');
@@ -809,6 +842,8 @@ $('voice').onchange = () => { S.naturalForced = $('voice').value === 'natural'; 
 async function boot() {
   try {
     S.cfg = await api('/api/config');
+    $('engineRow').hidden = !(S.cfg.vapi && S.cfg.vapi.enabled);
+    $('engine').onchange = () => { $('voiceRow').hidden = $('engine').value === 'vapi'; };
     $('bizline').textContent = `${S.cfg.business} · ${S.cfg.open}–${S.cfg.close} · ${S.cfg.slot_minutes}-min meetings`;
     const cal = $('chipCal'); cal.classList.add(S.cfg.calendar === 'google' ? 'ok' : 'warn');
     cal.lastElementChild.textContent = S.cfg.calendar === 'google' ? 'Google Calendar connected' : 'Local calendar only';

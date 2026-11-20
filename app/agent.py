@@ -397,6 +397,11 @@ class CallSession:
         self.call_active = False
         self.on_state = None                       # callback: push the booking state to the UI
         self._spoken_prefix = ""                   # part of the reply already delivered (see _say)
+        # Vapi path: Vapi owns the conversation, we only see it through webhooks (see app/vapi.py)
+        self.external = False
+        self.external_user_texts: list[str] = []
+        self.external_last_agent = ""
+        self.vapi_processed = 0
         self.last_active = time.time()
         self.messages: list[dict] = [{"role": "system", "content": _system_prompt(caller)}]
 
@@ -412,6 +417,8 @@ class CallSession:
 
     def _asked_field(self) -> str | None:
         """Which field was the agent's last question about? (so a bare 'Ahmed Khan' or 'five' is understood)"""
+        if self.external:
+            return _asked_field_from(self.external_last_agent) if self.external_last_agent else None
         for m in reversed(self.messages[:-1]):
             if m["role"] == "assistant" and m.get("content") and not m.get("tool_calls"):
                 return _asked_field_from(m["content"])
@@ -419,7 +426,7 @@ class CallSession:
 
     def _caller_text(self) -> str:
         user = [m["content"] for m in self.messages if m["role"] == "user" and m.get("content")]
-        return " ".join(user + self.manual_text)
+        return " ".join(user + self.manual_text + self.external_user_texts)
 
     def _notify(self):
         if self.on_state:
@@ -653,6 +660,9 @@ class CallSession:
             if args:
                 self._update(args)
             st = self.booking
+            if st.booked and st.booked.get("key") == st.key():   # already done (a yes was handled by the rules)
+                self.forced_reply = self._result_reply({**st.booked, "success": True, "already_booked": True})
+                return {**st.booked, "success": True, "already_booked": True}
             if self.forced_reply:                       # e.g. the system is verifying the email
                 return {"success": False, "instruction": "NOT booked. The system is asking the caller a question."}
             miss = st.missing()

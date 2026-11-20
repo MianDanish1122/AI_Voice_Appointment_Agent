@@ -84,12 +84,31 @@ id in `.env`. To also email real invites with a Meet link: `python -m scripts.go
 **Deploy:** the `Dockerfile` works on Hugging Face Spaces / Render; put the `.env` values (and the service-account JSON text
 as `GOOGLE_SERVICE_ACCOUNT_JSON`) in the host's secrets. Use Groq/Gemini there (no local models).
 
+## Optional: Vapi voice engine
+
+[Vapi](https://vapi.ai) is a managed voice platform (streaming speech-to-text, LLM, text-to-speech, phone numbers). The page
+can use it instead of the built-in free voice; **the booking rules, form and Google Calendar are the same code**: Vapi talks,
+and calls this server's tools (`update_booking_details`, `check_available_slots`, `book_appointment`) over a webhook
+(`POST /api/vapi/webhook`, protected by `X-Vapi-Secret`). The caller's words come back through Vapi's conversation, so the
+same code-side extraction (dates, times, emails, yes/no) and the read-back + explicit "yes" apply.
+
+```powershell
+# 1. deploy the app at a public https URL (Vapi must reach it), 2. then:
+.\.venv\Scripts\python -m scripts.vapi_setup --server-url https://your-app.example --dry-run   # inspect first
+.\.venv\Scripts\python -m scripts.vapi_setup --server-url https://your-app.example             # creates/updates tools + assistant
+# 3. set VAPI_PUBLIC_KEY, VAPI_ASSISTANT_ID, VAPI_WEBHOOK_SECRET on the host -> a "Voice engine" selector appears on the page
+```
+
+Status: our side is tested with payloads shaped exactly like Vapi's documented `tool-calls` / `conversation-update` messages
+and a mocked web SDK (offline + browser suites). It has **not** been run against a live Vapi call yet (that needs the public
+URL), and Vapi bills calls against your Vapi credits.
+
 ## Tests
 
 ```powershell
-.\.venv\Scripts\python -m tests.smoke_test      # 25 offline tests (fake LLM + fake Google), ~10 s
+.\.venv\Scripts\python -m tests.smoke_test      # 29 offline tests (fake LLM + fake Google), ~10 s
 .\.venv\Scripts\pip install -r requirements-dev.txt
-.\.venv\Scripts\python -m tests.ui_test         # 8 real-Chrome tests of the page + backend (screens in tests/screens/)
+.\.venv\Scripts\python -m tests.ui_test         # 9 real-Chrome tests of the page + backend (screens in tests/screens/)
 .\.venv\Scripts\python -m tests.live_e2e_test   # real LLM + REAL Google Calendar: books, verifies, deletes the test event
 .\.venv\Scripts\python -m tests.live_chat_test  # real LLM answers (questions, out-of-scope, Sunday, human)
 ```
@@ -113,4 +132,5 @@ the real backend.
 `app/booking.py` shared state, email recognition + validation · `app/agent.py` conversation + guard rails ·
 `app/main.py` API (web: `/api/web/*`, phone: `/twilio/*`) · `app/llm.py` provider chain + streaming ·
 `app/gcal.py` Google Calendar · `app/calendar_store.py` slots/bookings · `static/index.html` the app UI ·
-`tests/` suites · `knowledge/` FAQ · `scripts/google_login.py` optional invite login.
+`app/vapi.py` optional Vapi webhook + assistant/tool payloads · `tests/` suites · `knowledge/` FAQ ·
+`scripts/google_login.py` optional invite login · `scripts/vapi_setup.py` creates the Vapi assistant.

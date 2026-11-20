@@ -5,10 +5,10 @@ import uuid
 from xml.sax.saxutils import escape
 
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
-from . import calendar_store, config, gcal, llm
+from . import calendar_store, config, gcal, llm, vapi
 from .agent import SESSIONS, end_session, get_session
 from .booking import pretty_when
 from .kb import kb
@@ -142,7 +142,36 @@ async def web_config():
         "today": calendar_store.now().date().isoformat(), "max_days": 60,
         "calendar": "google" if gcal.enabled() else "local", "invites": gcal.oauth_enabled() if gcal.enabled() else False,
         "model": config.LLM_MODEL, "human_transfer": bool(config.HUMAN_PHONE),
+        # the public key is meant for browsers; the private key and webhook secret never leave the server
+        "vapi": {"enabled": bool(config.VAPI_PUBLIC_KEY and config.VAPI_ASSISTANT_ID),
+                 "public_key": config.VAPI_PUBLIC_KEY if config.VAPI_ASSISTANT_ID else "",
+                 "assistant_id": config.VAPI_ASSISTANT_ID},
     }
+
+
+# ---------------------------------------------------------------- Vapi (optional managed voice platform)
+@app.post("/api/vapi/webhook")
+async def vapi_webhook(request: Request):
+    """Vapi's 'server URL'. Same booking rules as the built-in path; tool results are always HTTP 200 (Vapi's contract)."""
+    if not vapi.authorized(request.headers.get("x-vapi-secret")):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({}, status_code=200)
+    return JSONResponse(await vapi.handle_message(body.get("message") or {}))
+
+
+class LinkReq(BaseModel):
+    call_id: str
+    session_id: str
+
+
+@app.post("/api/vapi/link")
+async def vapi_link(req: LinkReq):
+    """The page tells us which Vapi call belongs to which web session, so the form follows the call."""
+    vapi.CALL_TO_SID[req.call_id] = req.session_id
+    return {"ok": True}
 
 
 @app.post("/api/web/start")
@@ -223,7 +252,7 @@ async def web_stream(msg: WebMsg):
 
 @app.get("/api/web/state/{sid}")
 async def web_get_state(sid: str):
-    return await get_session(sid, "browser").public_state(fresh=True)
+    return await get_session(sid, "browser").public_state()      # polled every ~1 s during a Vapi call: cached availability is fine
 
 
 @app.post("/api/web/state")

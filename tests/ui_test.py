@@ -7,6 +7,7 @@ Run:                 .venv\\Scripts\\python -m tests.ui_test
 Screenshots land in tests/screens/ .
 """
 import json
+import os
 import re
 import tempfile
 import threading
@@ -20,6 +21,7 @@ import uvicorn                                           # noqa: E402
 from playwright.sync_api import expect, sync_playwright  # noqa: E402
 
 LAST = {}
+CONTEXTS = []                       # every browser context a test opens; closed after the test (memory on small machines)
 PORT = 8765
 URL = f"http://127.0.0.1:{PORT}/"
 SHOTS = Path(__file__).parent / "screens"
@@ -41,7 +43,19 @@ INIT = """
 """
 
 
+FAKE_VAPI_SDK = """
+export default class Vapi {
+  constructor(key){ this.key=key; this.h={}; window.__vapi=this; }
+  on(e,f){ (this.h[e]=this.h[e]||[]).push(f); return this; }
+  emit(e,...a){ (this.h[e]||[]).forEach(f=>f(...a)); }
+  async start(id, ov){ window.__vapiStart={key:this.key,id,ov}; setTimeout(()=>this.emit('call-start'),20); return {id:'call-xyz'}; }
+  stop(){ window.__vapiStopped=true; this.emit('call-end'); }
+}
+"""
+
+
 def start_server():
+    config.VAPI_PUBLIC_KEY, config.VAPI_ASSISTANT_ID = "pk_test", "asst_test"     # makes the Vapi engine option appear
     config.DB_PATH = Path(tempfile.mkdtemp()) / "ui.db"
     from app.main import app
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=PORT, log_level="warning"))
@@ -53,6 +67,7 @@ def start_server():
 
 def new_page(browser, width=1440, height=900, scheme="light"):
     ctx = browser.new_context(viewport={"width": width, "height": height}, color_scheme=scheme, permissions=["microphone"])
+    CONTEXTS.append(ctx)
     ctx.add_init_script(INIT)
     page = ctx.new_page()
     errors = []
@@ -237,6 +252,57 @@ def test_google_down_is_reported_not_hidden(browser):
         g.uninstall()
 
 
+def test_vapi_engine_wires_the_call_and_the_form_follows(browser):
+    """Our side of the Vapi integration, end to end: the page starts a Vapi call (SDK mocked) with our session id, Vapi's
+    webhook (posted here exactly as Vapi would) drives the same booking rules, and the form + success card follow live."""
+    import httpx
+    config.DB_PATH = Path(tempfile.mkdtemp()) / "v.db"
+    page = new_page(browser)
+    page.route(re.compile(r"https://esm\.sh/@vapi-ai/web.*"),
+               lambda r: r.fulfill(status=200, content_type="application/javascript", body=FAKE_VAPI_SDK))
+    expect(page.locator("#engineRow")).to_be_visible()
+    page.select_option("#engine", "vapi")
+    expect(page.locator("#voiceRow")).to_be_hidden()
+    page.click("#callBtn")
+    page.wait_for_function("window.__vapiStart")
+    start = page.evaluate("window.__vapiStart")
+    assert start["key"] == "pk_test" and start["id"] == "asst_test", start
+    sid = start["ov"]["variableValues"]["sid"]
+    assert sid.startswith("web-"), start
+    expect(page.locator("#phase")).to_contain_text("Connected")
+
+    def vapi_tool(name, messages, args=None):
+        body = {"message": {"type": "tool-calls", "call": {"id": "call-xyz", "type": "webCall"}, "artifact": {"messages": messages},
+                            "toolCallList": [{"id": "tc", "type": "function",
+                                              "function": {"name": name, "arguments": {"session_id": sid, **(args or {})}}}]}}
+        r = httpx.post(URL + "api/vapi/webhook", json=body, timeout=30)
+        assert r.status_code == 200, r.text
+        return json.loads(r.json()["results"][0]["result"])
+
+    hello = {"role": "assistant", "message": "Hello, how can I help?"}
+    u1 = {"role": "user", "message": "Book a meeting on November 25 at 11 AM, my name is Ahmed Khan, "
+                                     "my email is ahmed at gmail dot com, I want to discuss hiring"}
+    out = vapi_tool("update_booking_details", [hello, u1])
+    assert out["say"].startswith("Just to confirm"), out
+    expect(page.locator("#fDate")).to_have_value("2026-11-25")                  # the webhook filled the form...
+    expect(page.locator("#fTime")).to_have_value("11:00")
+    expect(page.locator("#fName")).to_have_value("Ahmed Khan")
+    expect(page.locator("#fEmail")).to_have_value("ahmed@gmail.com")
+    expect(page.locator("#fPurpose")).to_have_value("hiring")                   # ...and the page showed it without a reload
+    page.evaluate("window.__vapi.emit('message', {type:'transcript', role:'user', transcriptType:'final', transcript:'book it please'})")
+    expect(page.locator(".msg.user .body")).to_contain_text("book it please")
+    assert T.bookings() == [], "nothing may be booked before the caller says yes"
+    out = vapi_tool("book_appointment", [hello, u1, {"role": "assistant", "message": out["say"]}, {"role": "user", "message": "yes"}])
+    assert out["success"] is True and out["say"].startswith("Done!"), out
+    expect(page.locator("#success")).to_be_visible()
+    assert len(T.bookings()) == 1
+    page.screenshot(path=str(SHOTS / "vapi-booked-desktop.png"))
+    page.click("#callBtn")                                                       # End call
+    page.wait_for_function("window.__vapiStopped")
+    expect(page.locator("#callBtnText")).to_have_text("Start call")
+    assert not page.errors, page.errors
+
+
 def test_looks_right_on_phone_and_dark(browser):
     config.DB_PATH = Path(tempfile.mkdtemp()) / "h.db"
     page = new_page(browser, 390, 844, "dark")
@@ -255,13 +321,19 @@ def main():
     server = start_server()
     expect.set_options(timeout=15000)       # generous: CI boxes and old laptops are slow with Chrome + server together
     tests = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]
+    only = os.environ.get("UI_ONLY")                    # e.g. set UI_ONLY=voice_email to run matching tests only
+    if only:
+        tests = [(n, f) for n, f in tests if only in n]
     failed = 0
     with sync_playwright() as p:
         browser = p.chromium.launch(channel="chrome", headless=True,
                                     args=["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream"])
         for name, fn in tests:
             try:
-                fn(browser)
+                try:
+                    fn(browser)
+                finally:
+                    pass
                 print(f"  PASS  {name}")
             except Exception as e:
                 failed += 1
@@ -277,6 +349,12 @@ def main():
                               "booked:", bool(sess.booking.booked), "email_status:", sess.booking.email_status)
                 except Exception:
                     pass
+            for ctx in CONTEXTS:                         # free the pages of this test before the next one starts
+                try:
+                    ctx.close()
+                except Exception:
+                    pass
+            CONTEXTS.clear()
         browser.close()
     server.should_exit = True
     print(f"\n{len(tests) - failed}/{len(tests)} passed")

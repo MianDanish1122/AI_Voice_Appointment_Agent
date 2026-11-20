@@ -502,6 +502,114 @@ def test_human_handoff_is_instant_and_not_triggered_by_booking_talk():
         assert s.action is None, (phrase_, s.action)
 
 
+def _vapi_client():
+    from fastapi.testclient import TestClient
+    from app.main import app
+    return TestClient(app)
+
+
+def _vapi_tool(c, name, args, messages, sid=None, call=None, tc_id="tc-1"):
+    a = dict(args)
+    if sid:
+        a["session_id"] = sid
+    r = c.post("/api/vapi/webhook", json={"message": {
+        "type": "tool-calls", "call": call or {"id": "call-1", "type": "webCall"}, "artifact": {"messages": messages},
+        "toolCallList": [{"id": tc_id, "type": "function", "function": {"name": name, "arguments": a}}]}})
+    assert r.status_code == 200, r.text                          # Vapi's contract: always HTTP 200
+    res = r.json()["results"]
+    assert len(res) == 1 and res[0]["toolCallId"] == tc_id, res
+    return res[0]
+
+
+def test_vapi_webhook_uses_the_same_booking_rules():
+    fresh(call=False)
+    c = _vapi_client()
+    hello = {"role": "assistant", "message": "Hello, thank you for calling. How can I help you today?"}
+    first = {"role": "user", "message": f"Hi, book a meeting {phrase(2)} at 11 AM, my name is Ahmed Khan, "
+                                        "my email is ahmed at gmail dot com, I want to discuss hiring"}
+    res = _vapi_tool(c, "update_booking_details", {"name": "Ahmed Khan"}, [hello, first], sid="vapi-1")
+    assert "result" in res and "\n" not in res["result"], res                # flat single-line string
+    out = json.loads(res["result"])
+    assert out["say"].startswith("Just to confirm") and "Shall I book it?" in out["say"], out
+    assert bookings() == [], "booked before the caller said yes"
+    agent_says = {"role": "assistant", "message": out["say"]}
+    res = _vapi_tool(c, "book_appointment", {}, [hello, first, agent_says, {"role": "user", "message": "yes please"}], sid="vapi-1")
+    out = json.loads(res["result"])
+    assert out["success"] is True and out["say"].startswith("Done!"), out
+    rows = bookings()
+    assert len(rows) == 1 and rows[0]["email"] == "ahmed@gmail.com" and rows[0]["name"] == "Ahmed Khan", rows
+    # calling it again (the model double-fires) must not book twice
+    _vapi_tool(c, "book_appointment", {}, [hello, first, agent_says, {"role": "user", "message": "yes please"}], sid="vapi-1", tc_id="tc-2")
+    assert len(bookings()) == 1
+
+
+def test_vapi_wrong_yes_does_not_book_and_changes_are_applied():
+    fresh(call=False)
+    c = _vapi_client()
+    hello = {"role": "assistant", "message": "Hello."}
+    u1 = {"role": "user", "message": f"book a meeting {phrase(2)} at 11 AM, my name is Mia Stone, "
+                                     "email mia at gmail dot com, I want to discuss branding"}
+    r1 = json.loads(_vapi_tool(c, "update_booking_details", {}, [hello, u1], sid="vapi-2")["result"])
+    a1 = {"role": "assistant", "message": r1["say"]}
+    u2 = {"role": "user", "message": "actually make it 3 PM"}                   # changes their mind instead of saying yes
+    r2 = json.loads(_vapi_tool(c, "book_appointment", {}, [hello, u1, a1, u2], sid="vapi-2", tc_id="tc-2")["result"])
+    assert bookings() == [] and "3 PM" in r2.get("say", ""), r2
+    assert agent.SESSIONS["vapi-2"].booking.values["time"] == "15:00"
+
+
+def test_vapi_security_errors_and_session_mapping():
+    fresh(call=False)
+    c = _vapi_client()
+    config.VAPI_WEBHOOK_SECRET = "s3cret"
+    try:
+        body = {"message": {"type": "status-update", "status": "in-progress", "call": {"id": "c"}}}
+        assert c.post("/api/vapi/webhook", json=body).status_code == 401
+        assert c.post("/api/vapi/webhook", json=body, headers={"x-vapi-secret": "wrong"}).status_code == 401
+        assert c.post("/api/vapi/webhook", json=body, headers={"x-vapi-secret": "s3cret"}).status_code == 200
+    finally:
+        config.VAPI_WEBHOOK_SECRET = ""
+    r = c.post("/api/vapi/webhook", content=b"not json")
+    assert r.status_code == 200 and r.json() == {}
+    res = _vapi_tool(c, "delete_everything", {}, [], sid="x")                 # unknown tool -> error field, still 200
+    assert "error" in res and "result" not in res, res
+    # session id can come from the call object (assistantOverrides.variableValues) when the model omits it
+    call = {"id": "c-77", "assistantOverrides": {"variableValues": {"sid": "web-mapped"}}}
+    _vapi_tool(c, "update_booking_details", {}, [{"role": "user", "message": f"book {phrase(2)} at 11 AM"}], call=call)
+    assert agent.SESSIONS["web-mapped"].booking.values["date"] == iso(2)
+    # an unfilled {{sid}} variable (phone call) must NOT become a shared session for every caller
+    for n in (1, 2):
+        _vapi_tool(c, "update_booking_details", {"session_id": "{{sid}}"}, [{"role": "user", "message": f"book {phrase(n + 1)} at 11 AM"}],
+                   call={"id": f"phone-{n}", "customer": {"number": f"+9200000{n}"}})
+    assert agent.SESSIONS["vapi-phone-1"].booking.values["date"] == iso(2)
+    assert agent.SESSIONS["vapi-phone-2"].booking.values["date"] == iso(3) and "{{sid}}" not in agent.SESSIONS
+    # the page can bind a call to its session explicitly
+    assert c.post("/api/vapi/link", json={"call_id": "c-78", "session_id": "web-linked"}).json()["ok"]
+    _vapi_tool(c, "update_booking_details", {}, [{"role": "user", "message": f"book {phrase(3)} at 2 PM"}],
+               call={"id": "c-78"})
+    assert agent.SESSIONS["web-linked"].booking.values["time"] == "14:00"
+    # a conversation-update (no tool call at all) also keeps the shared state in step
+    c.post("/api/vapi/webhook", json={"message": {"type": "conversation-update", "call": {"id": "c-78"},
+           "messages": [{"role": "user", "message": f"book {phrase(3)} at 2 PM"},
+                        {"role": "assistant", "message": "Sure."}, {"role": "user", "message": "my name is Sam Lee"}]}})
+    assert agent.SESSIONS["web-linked"].booking.values["name"] == "Sam Lee"
+
+
+def test_vapi_assistant_and_tool_payloads():
+    from app import vapi
+    tools = vapi.tool_payloads("https://host.example/api/vapi/webhook", "sek")
+    assert [t["function"]["name"] for t in tools] == list(vapi.TOOL_NAMES)
+    for t in tools:
+        assert t["type"] == "function" and t["async"] is False and t["server"]["url"].endswith("/api/vapi/webhook")
+        assert t["server"]["headers"] == {"X-Vapi-Secret": "sek"}
+        assert "session_id" in t["function"]["parameters"]["properties"]
+    a = vapi.assistant_payload("https://host.example/api/vapi/webhook", "sek", ["t1", "t2", "t3"])
+    assert a["model"]["toolIds"] == ["t1", "t2", "t3"] and a["server"]["headers"]["X-Vapi-Secret"] == "sek"
+    assert "tool-calls" in a["serverMessages"] and a["firstMessage"].startswith("Hello")
+    prompt = a["model"]["messages"][0]["content"]
+    assert "{{sid}}" in prompt and "50,000 PKR" in prompt, "session variable + knowledge base must be in the prompt"
+    assert "sek" not in prompt and "sek" not in json.dumps(vapi.tool_payloads("https://x/y", None))
+
+
 def test_deterministic_path_skips_the_llm():
     s = fresh()
     fill_voice(s)
