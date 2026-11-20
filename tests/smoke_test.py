@@ -379,6 +379,35 @@ def test_confirmation_email_is_sent_after_booking_only_when_mail_works():
         g.uninstall()
 
 
+def test_confirmation_email_through_the_apps_script_webhook():
+    from app import mailer
+    posted = []
+
+    class Resp:
+        def __init__(self, ok): self.status_code, self.text, self._ok = 200, "x", ok
+        def json(self): return {"ok": self._ok}
+
+    keep = (config.MAIL_WEBHOOK_URL, config.MAIL_WEBHOOK_SECRET, mailer.httpx.post)
+    try:
+        config.MAIL_WEBHOOK_URL, config.MAIL_WEBHOOK_SECRET = "https://script.google.com/macros/s/x/exec", "sek"
+        assert mailer.enabled()
+        import datetime as _dt
+        t0 = _dt.datetime(2026, 12, 1, 11, 0, tzinfo=calendar_store.TZ)
+        msg = mailer.build("mia@gmail.com", "Mia Stone", "Tuesday, December 1st at 11 AM", "branding", t0, t0 + _dt.timedelta(minutes=30))
+        mailer.httpx.post = lambda url, json=None, **kw: (posted.append((url, json, kw)), Resp(True))[1]
+        assert mailer.send(msg) is True
+        url, body, kw = posted[0]
+        assert url.endswith("/exec") and body["secret"] == "sek" and body["to"] == "mia@gmail.com", body
+        assert "calendar.google.com" in body["body"] and "BEGIN:VEVENT" in body["ics"] and kw["follow_redirects"] is True
+        mailer.httpx.post = lambda *a, **k: Resp(False)            # script refuses (bad secret ...) -> not reported as sent
+        assert mailer.send(msg) is False
+        def boom(*a, **k): raise RuntimeError("down")
+        mailer.httpx.post = boom
+        assert mailer.send(msg) is False                          # never raises
+    finally:
+        config.MAIL_WEBHOOK_URL, config.MAIL_WEBHOOK_SECRET, mailer.httpx.post = keep
+
+
 def test_google_failure_never_reports_success():
     g = FakeGoogle(fail_create=True).install()
     try:

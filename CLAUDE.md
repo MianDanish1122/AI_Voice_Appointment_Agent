@@ -16,7 +16,7 @@ Evaluators will try tricky phrases ("tomorrow 5 PM… no, day after at 11", Sund
 ```powershell
 python -m venv .venv ; .\.venv\Scripts\pip install -r requirements.txt ; copy .env.example .env   # fill keys
 .\.venv\Scripts\python -m uvicorn app.main:app --port 8000      # http://localhost:8000 in Chrome/Edge
-.\.venv\Scripts\python -m tests.smoke_test      # 32 offline tests, fake LLM + fake Google + design lint. MUST pass before every commit
+.\.venv\Scripts\python -m tests.smoke_test      # 33 offline tests, fake LLM + fake Google + design lint. MUST pass before every commit
 .\.venv\Scripts\python -m tests.ui_test         # 14 real-Chrome tests of the VOICE-ONLY page (incl. fit-to-screen on 8 window sizes and a full call on 1366x650) (UI_ONLY=<name part> runs a subset; needs: pip install -r requirements-dev.txt; uses installed Chrome)
 .\.venv\Scripts\python -m tests.live_e2e_test   # real LLM + REAL Google Calendar; creates a test event, verifies, deletes it
 .\.venv\Scripts\python -m tests.live_chat_test  # real LLM answers
@@ -28,7 +28,7 @@ events named "Upgrade Check" / "Profile Probe" in the owner's calendar and delet
 - `app/booking.py` — shared `BookingState` (per session), email extraction/validation/confidence (`extract_email`, `check_email`), name/purpose/slot validators (`check_slot`), spoken helpers.
 - `app/agent.py` — `CallSession.respond()`: (1) `_deterministic()` handles in code, with no LLM: yes/no to read-backs, human handoff, dates/times/emails/names/purpose from the caller's words (incl. answers to the question just asked), real availability, acknowledge-and-ask-next; (2) otherwise the LLM (tools: `check_available_slots`, `update_booking_details`, `book_appointment`, `transfer_to_human`, `end_call`) with the BOOKING STATE + KB + "SLOTS CHECKED" injected; streamed sentence by sentence via `_SentenceStream`. `apply_manual()` = form edits. `_finalize_sync()` is the ONLY place that books.
 - `app/callog.py` — call history: `CallSession.respond()` appends each turn (+ outcome) to table `calls` in the same SQLite; `/api/calls?sids=` (only the ids the browser sends) and `/api/calls/{sid}`; page has a `history` dialog. Text only, no audio.
-- `app/mailer.py` — confirmation email to the caller after `_finalize_sync` books (SMTP via `SMTP_HOST/PORT/USER/PASSWORD/MAIL_FROM`; details + Google add-to-calendar link + .ics). NOT yet tested against a real SMTP server (needs the owner's Gmail App Password); offline-tested with a fake sender.
+- `app/mailer.py` — confirmation email to the caller after `_finalize_sync` books (either the Apps Script web app `scripts/mail_webhook.gs` via `MAIL_WEBHOOK_URL/SECRET` (preferred: owner's Google account is supervised, App Passwords likely unavailable) or SMTP via `SMTP_HOST/PORT/USER/PASSWORD/MAIL_FROM`; details + Google add-to-calendar link + .ics). NOT yet tested against a real mail path (owner must deploy the Apps Script / provide SMTP); offline-tested with a fake sender.
 - `app/main.py` — web API `/api/web/{start,stream,message,state,review,confirm,reset,end}`, `/api/config`, `/api/tts`, `/api/bookings`, phone `/twilio/*`. Use `spawn()` for fire-and-forget tasks (strong refs!).
 - `app/llm.py` — provider chain Groq `openai/gpt-oss-120b` → Gemini 2.5 Flash → smaller Groq models; 429 cooldown; empty answer = failure; SSE streaming; shared HTTP client + warm-up.
 - `app/gcal.py` — Google REST over a shared `httpx.Client`; deterministic event id ⇒ idempotent create (409 ⇒ reuse; cancelled ⇒ restore); service account, or OAuth token ⇒ real invites + Meet.
@@ -53,7 +53,7 @@ events named "Upgrade Check" / "Profile Probe" in the owner's calendar and delet
 - Google `events.insert` takes ~1.4 s by itself, so the agent says "One moment while I book that." first.
 
 ## Status / open items
-Done & verified (offline 32/32, real-Chrome 14/14, live E2E with real Groq/Gemini + real Google Calendar): everything in README "What it does".
+Done & verified (offline 33/33, real-Chrome 14/14, live E2E with real Groq/Gemini + real Google Calendar): everything in README "What it does".
 Still open:
 0. **Vapi** (optional): after deploying run `scripts/vapi_setup`, set the 3 env vars on the host, then make ONE real test call and fix whatever the live API disagrees with (see the unverified list above). Vapi credits are the owner's money: don't loop test calls.
 1. **No public live link yet** (most important). Deploy this repo (Dockerfile present) to Hugging Face Spaces / Render with the `.env` values as secrets (`GOOGLE_SERVICE_ACCOUNT_JSON` = key text). Point the Twilio webhook at `<url>/twilio/voice` (trial: verified numbers only; the web link is the safe deliverable).

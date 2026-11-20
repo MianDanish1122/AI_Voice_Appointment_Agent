@@ -48,6 +48,9 @@ SMTP_PORT = int(env("SMTP_PORT", "587") or 587)
 SMTP_USER = env("SMTP_USER")
 SMTP_PASSWORD = env("SMTP_PASSWORD").replace(" ", "")      # Google shows App Passwords in groups of four
 MAIL_FROM = env("MAIL_FROM")
+# Alternative with no password: a Google Apps Script web app that sends the mail from your own Gmail (scripts/mail_webhook.gs)
+MAIL_WEBHOOK_URL = env("MAIL_WEBHOOK_URL")
+MAIL_WEBHOOK_SECRET = env("MAIL_WEBHOOK_SECRET")
 
 # Optional Vapi path (managed voice platform): Vapi does speech + phone, this server provides the booking tools.
 VAPI_API_KEY = env("VAPI_API_KEY")                  # private key: only used by scripts/vapi_setup.py

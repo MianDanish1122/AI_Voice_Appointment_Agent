@@ -10,13 +10,15 @@ import urllib.parse
 import uuid
 from email.message import EmailMessage
 
+import httpx
+
 from . import config
 
 log = logging.getLogger("mailer")
 
 
 def enabled() -> bool:
-    return bool(config.SMTP_HOST and config.SMTP_USER and config.SMTP_PASSWORD)
+    return bool(config.MAIL_WEBHOOK_URL) or bool(config.SMTP_HOST and config.SMTP_USER and config.SMTP_PASSWORD)
 
 
 def _utc(d: dt.datetime) -> str:
@@ -64,6 +66,8 @@ def send(msg: EmailMessage) -> bool:
     """Send via SMTP; True only if the server accepted it. Never raises (a mail problem must not undo a booking)."""
     if not enabled():
         return False
+    if config.MAIL_WEBHOOK_URL:
+        return _send_webhook(msg)
     try:
         if config.SMTP_PORT == 465:
             with smtplib.SMTP_SSL(config.SMTP_HOST, 465, timeout=12, context=ssl.create_default_context()) as s:
@@ -78,4 +82,20 @@ def send(msg: EmailMessage) -> bool:
         return True
     except Exception:
         log.exception("confirmation email failed")
+        return False
+
+
+def _send_webhook(msg: EmailMessage) -> bool:
+    """Hand the mail to the Google Apps Script web app (scripts/mail_webhook.gs), which sends it from the owner's Gmail."""
+    try:
+        ics = next(msg.iter_attachments(), None)
+        payload = {"secret": config.MAIL_WEBHOOK_SECRET, "to": msg["To"], "subject": msg["Subject"],
+                   "body": msg.get_body(("plain",)).get_content(), "ics": ics.get_content() if ics is not None else "",
+                   "sender_name": config.BUSINESS_NAME}
+        r = httpx.post(config.MAIL_WEBHOOK_URL, json=payload, timeout=20, follow_redirects=True)   # Apps Script answers via a redirect
+        ok = r.status_code == 200 and r.json().get("ok") is True
+        log.info("confirmation email via Apps Script: %s", "sent" if ok else f"refused ({r.text[:120]})")
+        return ok
+    except Exception:
+        log.exception("confirmation email (Apps Script) failed")
         return False
