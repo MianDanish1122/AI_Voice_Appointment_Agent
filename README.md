@@ -111,7 +111,7 @@ URL), and Vapi bills calls against your Vapi credits.
 ```powershell
 .\.venv\Scripts\python -m tests.smoke_test      # 30 offline tests (fake LLM + fake Google + design lint), ~10 s
 .\.venv\Scripts\pip install -r requirements-dev.txt
-.\.venv\Scripts\python -m tests.ui_test         # 10 real-Chrome tests of the voice page + backend (screens in tests/screens/)
+.\.venv\Scripts\python -m tests.ui_test         # 13 real-Chrome tests of the voice page + backend (incl. fit-to-screen on 8 window sizes) (screens in tests/screens/)
 .\.venv\Scripts\python -m tests.live_e2e_test   # real LLM + REAL Google Calendar: books, verifies, deletes the test event
 .\.venv\Scripts\python -m tests.live_chat_test  # real LLM answers (questions, out-of-scope, Sunday, human)
 ```

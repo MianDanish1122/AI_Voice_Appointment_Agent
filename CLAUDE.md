@@ -17,7 +17,7 @@ Evaluators will try tricky phrases ("tomorrow 5 PM… no, day after at 11", Sund
 python -m venv .venv ; .\.venv\Scripts\pip install -r requirements.txt ; copy .env.example .env   # fill keys
 .\.venv\Scripts\python -m uvicorn app.main:app --port 8000      # http://localhost:8000 in Chrome/Edge
 .\.venv\Scripts\python -m tests.smoke_test      # 30 offline tests, fake LLM + fake Google + design lint. MUST pass before every commit
-.\.venv\Scripts\python -m tests.ui_test         # 10 real-Chrome tests of the VOICE-ONLY page (UI_ONLY=<name part> runs a subset; needs: pip install -r requirements-dev.txt; uses installed Chrome)
+.\.venv\Scripts\python -m tests.ui_test         # 13 real-Chrome tests of the VOICE-ONLY page (incl. fit-to-screen on 8 window sizes and a full call on 1366x650) (UI_ONLY=<name part> runs a subset; needs: pip install -r requirements-dev.txt; uses installed Chrome)
 .\.venv\Scripts\python -m tests.live_e2e_test   # real LLM + REAL Google Calendar; creates a test event, verifies, deletes it
 .\.venv\Scripts\python -m tests.live_chat_test  # real LLM answers
 ```
@@ -42,7 +42,7 @@ events named "Upgrade Check" / "Profile Probe" in the owner's calendar and delet
 - Free-tier models often skip tool calls (measured), so everything critical also exists as code.
 
 ## Design rules for the page (Hallmark/Lumen)
-- Prose is lowercase, mono labels are the only UPPERCASE; headings are roman (never italic); one accent-coloured verb in the headline; no orb, no glass/blur, no gradient text; every number on screen is measured or live; the 'start call' button must stay above the fold at 1280x800; mobile floor 320/375/414/768 px (no horizontal scroll, clickable text never wraps). Re-run `tests.ui_test` and read the screenshots in `tests/screens/` after any visual change.
+- Prose is lowercase, mono labels are the only UPPERCASE; headings are roman (never italic); one accent-coloured verb in the headline; no orb, no glass/blur, no gradient text; every number on screen is measured or live; the whole call must fit the screen on desktop-sized windows (app shell: page does not scroll, transcript scrolls inside itself; every stage block has an explicit grid row; short <=736px screens get a compact variant) while small windows/phones scroll normally; the 'start call' button must stay above the fold at 1280x800; mobile floor 320/375/414/768 px (no horizontal scroll, clickable text never wraps). Re-run `tests.ui_test` and read the screenshots in `tests/screens/` after any visual change.
 
 ## Learned the hard way
 - **Do not write Python patch scripts through a bash heredoc if they contain backslashes** (`\b`, `\s`, `\n`): the harness mangles them (we got real backspace characters in a regex). Write the script/file with the Write/Edit tools. After scripted edits run a control-character scan.

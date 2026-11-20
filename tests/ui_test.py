@@ -296,6 +296,94 @@ def test_primary_action_is_above_the_fold_on_a_laptop(browser):
     page.screenshot(path=str(SHOTS / "lumen-night-laptop-fold.png"))
 
 
+FIT_JS = """() => {
+  const q = s => document.querySelector(s), box = s => { const b = q(s).getBoundingClientRect(); return { top: Math.round(b.top), bottom: Math.round(b.bottom), h: Math.round(b.height) }; };
+  return { vh: innerHeight, page: document.documentElement.scrollHeight, stage: [q('#stage').scrollHeight, q('#stage').clientHeight],
+           stack: [q('.stack').scrollHeight, q('.stack').clientHeight], call: box('#callBtn'), dial: box('#dial'), phase: box('#phase'),
+           sheet: box('#sheet'), cue: box('#cue'), log: box('#log'), foot: box('.foot-stmt'),
+           // the stage's blocks must stack without overlapping each other (and without being clipped to nothing)
+           stack_blocks: ['#stage > .eyebrow', '#h1', '.lede', '.controls', '#apparatus', '.status', '.meter', '.stats', '.settings']
+             .map(s => q(s)).filter(e => e && e.getClientRects().length).map(e => { const b = e.getBoundingClientRect(); return [e.id || e.className, Math.round(b.top), Math.round(b.bottom), e.scrollHeight - e.clientHeight]; }) };
+}"""
+
+
+def test_whole_call_fits_the_screen_on_laptops_and_desktops(browser):
+    """On desktop-sized windows nothing needs scrolling: the page does not scroll, the stage and the right column fit,
+    and the call button, dial, status, booking sheet, transcript and footer are all on screen."""
+    problems = []
+    for w, h in ((1280, 720), (1366, 650), (1440, 900), (1536, 730), (1920, 1080), (1024, 700), (1280, 640), (2560, 1300)):
+        p = new_page(browser, w, h, "dark")
+        p.wait_for_timeout(900)
+        m = p.evaluate(FIT_JS)
+        why = []
+        if m["page"] > m["vh"] + 1:
+            why.append(f"page scrolls ({m['page']} > {m['vh']})")
+        if m["stage"][0] > m["stage"][1] + 1:
+            why.append(f"stage overflows {m['stage']}")
+        if m["stack"][0] > m["stack"][1] + 1:
+            why.append(f"right column overflows {m['stack']}")
+        for k in ("call", "phase", "sheet", "cue", "log", "foot"):
+            if m[k]["bottom"] > m["vh"] + 1:
+                why.append(f"{k} is below the screen ({m[k]['bottom']} > {m['vh']})")
+        blocks = m["stack_blocks"]
+        for (a, _, a_bottom, _), (b, b_top, _, _) in zip(blocks, blocks[1:]):
+            if b_top < a_bottom - 1:
+                why.append(f"{b!r} overlaps {a!r} by {a_bottom - b_top}px")
+        for name, _, _, spill in blocks:                      # a block whose content spills out of its own box paints over its neighbours
+            if name not in ("apparatus",) and spill > 4:          # 2-3px is just a tight display line-height, not an overlap
+                why.append(f"{name!r} content spills {spill}px out of its box")
+        if m["dial"]["h"] < 110:
+            why.append(f"dial too small ({m['dial']['h']}px)")
+        if m["log"]["h"] < 56:
+            why.append(f"transcript too short ({m['log']['h']}px)")
+        if why:
+            problems.append(f"{w}x{h}: " + "; ".join(why))
+        if (w, h) == (1366, 650):
+            p.screenshot(path=str(SHOTS / "lumen-night-fit-1366x650.png"))
+        if (w, h) == (1920, 1080):
+            p.screenshot(path=str(SHOTS / "lumen-night-fit-1920x1080.png"))
+    assert not problems, " | ".join(problems)
+
+
+def test_a_full_call_on_a_13_inch_laptop_stays_on_one_screen(browser):
+    """The worst case for height: a filled sheet, a long transcript and the booked card, on a 1366x650 browser area."""
+    config.DB_PATH = Path(tempfile.mkdtemp()) / "h.db"
+    page = new_page(browser, 1366, 650, "dark")
+    start_call(page)
+    for utterance in ("Book a meeting on November 25 at 11 AM", "My name is Ahmed Khan", "my email is ahmed khan 92 at gmail dot com",
+                      "I want to discuss pricing for a new website"):
+        say(page, utterance)
+    expect(last_agent(page)).to_contain_text("Just to confirm")
+    for stage in ("filled", "booked"):
+        if stage == "booked":
+            say(page, "yes")
+            expect(page.locator("#success")).to_be_visible()
+        page.wait_for_timeout(500)
+        m = page.evaluate(FIT_JS)
+        assert m["page"] <= m["vh"] + 1, f"{stage}: the page scrolls ({m['page']} > {m['vh']})"
+        assert m["stack"][0] <= m["stack"][1] + 1, f"{stage}: right column overflows {m['stack']}"
+        assert m["stage"][0] <= m["stage"][1] + 1, f"{stage}: stage overflows {m['stage']}"
+        assert m["sheet"]["bottom"] <= m["vh"] and m["foot"]["bottom"] <= m["vh"] + 1, f"{stage}: {m}"
+        assert m["log"]["h"] >= 56 and m["log"]["bottom"] <= m["vh"], f"{stage}: transcript {m['log']}"
+        page.screenshot(path=str(SHOTS / f"lumen-night-fit-call-{stage}.png"))
+    # the transcript scrolls inside itself and shows the newest line
+    inner = page.evaluate("(() => { const l = document.querySelector('#log'); return [l.scrollHeight, l.clientHeight, l.scrollHeight - l.scrollTop - l.clientHeight]; })()")
+    assert inner[0] > inner[1] and inner[2] <= 2, f"transcript should scroll inside itself, pinned to the newest line: {inner}"
+
+
+def test_small_windows_and_phones_still_scroll(browser):
+    """Below the desktop shell the page scrolls normally and every section (down to the footer) is reachable."""
+    for w, h in ((390, 844), (768, 1024), (900, 700), (1280, 500)):
+        p = new_page(browser, w, h, "dark")
+        p.wait_for_timeout(300)
+        info = p.evaluate("""() => { const f = document.querySelector('.foot-stmt');
+            const scroller = document.scrollingElement; scroller.scrollTo(0, 1e6);
+            return { total: scroller.scrollHeight, vh: innerHeight, y: Math.round(scroller.scrollTop), footBottom: Math.round(f.getBoundingClientRect().bottom) }; }""")
+        assert info["total"] > info["vh"], f"{w}x{h} should need scrolling: {info}"
+        assert info["y"] > 0, f"{w}x{h}: the page did not scroll: {info}"
+        assert info["footBottom"] <= info["vh"] + 1, f"{w}x{h}: the footer is unreachable: {info}"
+
+
 def test_night_and_day_drops_and_responsive_floor(browser):
     config.DB_PATH = Path(tempfile.mkdtemp()) / "g.db"
     # night is the default for a dark OS, day for a light one; the toggle flips and remembers
