@@ -13,7 +13,7 @@ import logging
 import re
 import time
 
-from . import calendar_store, config, gcal, llm
+from . import calendar_store, callog, config, gcal, llm
 from .booking import (FIELDS, BookingState, check_slot, clear_slot_cache, extract_email, next_question,
                       normalize_email, ordinal, pretty_when, spoken_email)
 from .kb import kb
@@ -410,6 +410,7 @@ class CallSession:
         text = f"Hello, thank you for calling {config.BUSINESS_NAME}. This is {config.AGENT_NAME}. How can I help you today?"
         self.messages.append({"role": "assistant", "content": text})
         self.call_active = True
+        callog.add(self, ("agent", text))
         return text
 
     def _phone(self) -> str:
@@ -750,6 +751,12 @@ class CallSession:
 
     # ---------------------------------------------------------------- the conversation turn
     async def respond(self, user_text: str, via: str = "voice", emit=None, on_state=None, timings: dict | None = None) -> str:
+        """One caller turn; the exchange is also written to the call history (callog)."""
+        reply = await self._respond(user_text, via, emit, on_state, timings)
+        await asyncio.to_thread(callog.add, self, ("user", user_text), ("agent", reply))
+        return reply
+
+    async def _respond(self, user_text: str, via: str = "voice", emit=None, on_state=None, timings: dict | None = None) -> str:
         """Handle one caller message. `emit(sentence)` (optional) receives the reply sentence by sentence as soon as
         each is ready; `on_state()` is called when the booking state changed; `timings` receives latency numbers."""
         t0 = time.perf_counter()
@@ -916,6 +923,10 @@ class CallSession:
         purpose = _extract_purpose(text, asked == "purpose")
         if purpose and not (st.source.get("purpose") == "manual" and st.values["purpose"]):
             put("purpose", purpose)
+        if (name and not newly and not st.values["name"] and st.errors.get("name") and len(name.split()) == 1
+                and "?" not in text and not _QUESTION.search(text)):
+            self._notify()                              # first name only: it already shows on the sheet; ask for the rest
+            return f"Thanks, {name.title()}. And what is your last name?"
         date_err = st.errors.get("date") if d else None      # e.g. "We're closed on Saturdays" / "already passed"
         if newly or date_err:
             self._notify()

@@ -65,6 +65,7 @@
   --rule-blueprint: oklch(96% 0.006 262 / 0.04);
   --color-focus: oklch(80% 0.16 50);
   --shadow-depth: 0 24px 60px -28px oklch(0% 0 0 / 0.55);
+  --color-scrim: oklch(8% 0.014 265 / 0.72);
 }
 
 /* Day Foundry: the light is captured, not generated (no perpetual motion, see page CSS) */
@@ -90,4 +91,5 @@
   --rule-blueprint: oklch(18% 0.014 265 / 0.05);
   --color-focus: oklch(46% 0.24 268);
   --shadow-depth: 0 20px 48px -30px oklch(30% 0.05 265 / 0.35);
+  --color-scrim: oklch(30% 0.03 265 / 0.45);
 }

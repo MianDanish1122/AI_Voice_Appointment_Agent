@@ -250,6 +250,7 @@ class BookingState:
     email_suggestion: str | None = None
     booked: dict | None = None
     version: int = 0
+    heard: dict = field(default_factory=dict)       # field -> what the caller said but could not be accepted yet (shown dimmed)
 
     # -- keys
     def key(self) -> str:
@@ -306,6 +307,10 @@ class BookingState:
         self.errors.pop(name, None)
         if err:
             self.errors[name] = err
+            if value and not stored:
+                self.heard[name] = value
+        if stored or not value:
+            self.heard.pop(name, None)
         self.values[name] = stored
         if stored or not value:
             self.source[name] = source
@@ -319,6 +324,7 @@ class BookingState:
         self.errors.pop("email", None)
         if not value:
             self.values["email"], self.email_status, self.email_suggestion = "", "empty", None
+            self.heard.pop("email", None)
             self.source["email"] = source
             changed = bool(old)
             self.version += changed
@@ -327,9 +333,11 @@ class BookingState:
         if not res["valid"]:
             self.values["email"], self.email_status, self.email_suggestion = "", "invalid", None
             self.errors["email"] = res.get("error", "Invalid email.")
+            self.heard["email"] = value
             self.source["email"] = source
             return {"ok": False, "error": self.errors["email"], "changed": bool(old)}
         email = res["email"]
+        self.heard.pop("email", None)
         same = email == old
         self.values["email"] = email
         self.source["email"] = source
@@ -349,7 +357,7 @@ class BookingState:
         status = self.email_status if keep_contact else "empty"
         self.values = {f: "" for f in FIELDS}
         self.values.update(keep)
-        self.errors, self.booked = {}, None
+        self.errors, self.booked, self.heard = {}, None, {}
         self.email_status = status if keep.get("email") else "empty"
         self.version += 1
 
@@ -376,7 +384,7 @@ class BookingState:
         if self.booked:                      # once booked, every step is done (the slot itself is now taken by us)
             steps = {k: True for k in steps}
         return {
-            "values": dict(self.values), "source": dict(self.source), "errors": dict(self.errors),
+            "values": dict(self.values), "heard": dict(self.heard), "source": dict(self.source), "errors": dict(self.errors),
             "email_status": self.email_status, "email_confidence": self.email_conf,
             "email_suggestion": self.email_suggestion, "missing": missing,
             "slot": slot, "steps": steps, "key": self.key(), "version": self.version,

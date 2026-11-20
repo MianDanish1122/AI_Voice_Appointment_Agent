@@ -402,7 +402,7 @@ def test_night_and_day_drops_and_responsive_floor(browser):
         p.wait_for_timeout(200)
         scroll = p.evaluate("[document.documentElement.scrollWidth, window.innerWidth, document.body.scrollWidth]")
         assert scroll[0] <= scroll[1] + 1 and scroll[2] <= scroll[1] + 1, f"horizontal scroll at {w}px: {scroll}"
-        lines = p.evaluate("""() => ['#callBtnText', '#micBtnText', '#themeLabel', '.settings summary', '#wordmark'].map(s => {
+        lines = p.evaluate("""() => ['#callBtnText', '#micBtnText', '#themeLabel', '#histBtn', '.settings summary', '#wordmark'].map(s => {
             const e = document.querySelector(s), r = document.createRange(); r.selectNodeContents(e);
             return [s, new Set([...r.getClientRects()].map(x => Math.round(x.top))).size];
         })""")
@@ -410,6 +410,36 @@ def test_night_and_day_drops_and_responsive_floor(browser):
         if w == 375:
             p.screenshot(path=str(SHOTS / "lumen-night-phone.png"), full_page=True)
     assert not night.errors, night.errors
+
+
+def test_call_history_shows_the_conversation_and_a_first_name_shows_on_the_sheet(browser):
+    config.DB_PATH = Path(tempfile.mkdtemp()) / "h.db"
+    page = new_page(browser, 1280, 720)
+    page.click("#histBtn")                                                      # nothing yet
+    expect(page.locator("#histList")).to_contain_text("no calls yet")
+    page.click("#histClose")
+    start_call(page)
+    say(page, "my name is Danish")                                              # first name only: shown, flagged, not accepted
+    expect(page.locator("#vName")).to_have_text("Danish")
+    expect(page.locator("#vName")).to_have_class(re.compile("is-heard"))
+    expect(page.locator("#msgName")).to_contain_text(re.compile("full name", I))
+    say(page, "Danish Khan")
+    expect(page.locator("#vName")).to_have_text("Danish Khan")
+    expect(page.locator("#vName")).not_to_have_class(re.compile("is-heard"))
+    page.click("#callBtn")                                                      # end the call
+    expect(page.locator("#callBtnText")).to_have_text(re.compile("start", I))
+    page.click("#histBtn")
+    expect(page.locator(".hist__item")).to_have_count(1)
+    expect(page.locator(".hist__item")).to_contain_text("Danish Khan")
+    expect(page.locator("#histView .line.user .text").first).to_have_text("my name is Danish")
+    expect(page.locator("#histView .line.agent .text").first).to_contain_text("Hello, thank you for calling")
+    page.screenshot(path=str(SHOTS / "lumen-night-history.png"))
+    page.keyboard.press("Escape")
+    expect(page.locator("#hist")).not_to_be_visible()
+    page.reload()                                                               # the list survives a reload (kept in this browser)
+    page.click("#histBtn")
+    expect(page.locator(".hist__item")).to_have_count(1)
+    assert not page.errors, page.errors
 
 
 def main():

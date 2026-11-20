@@ -741,6 +741,28 @@ def test_phone_flow_twilio():
     assert "<Hangup/>" in t, t
 
 
+def test_call_history_keeps_transcripts_outcome_and_only_shows_your_own_calls():
+    from fastapi.testclient import TestClient
+    from app.main import app
+    c = TestClient(app)
+    config.DB_PATH = Path(tempfile.mkdtemp()) / "t.db"
+    booking.clear_slot_cache()
+    a = c.post("/api/web/start", json={}).json()["session_id"]
+    b = c.post("/api/web/start", json={}).json()["session_id"]
+    for t in [f"book a meeting {phrase(2)} at 11 AM", "my name is Mia Stone", "my email is mia@gmail.com", "I want to discuss branding", "yes"]:
+        c.post("/api/web/message", json={"session_id": a, "text": t, "via": "voice"})
+    c.post("/api/web/message", json={"session_id": b, "text": "what are your opening hours?", "via": "voice"})
+    mine = c.get("/api/calls", params={"sids": a}).json()
+    assert [x["sid"] for x in mine] == [a], mine                       # call b is not leaked to a's owner
+    assert mine[0]["outcome"] == "booked" and mine[0]["name"] == "Mia Stone" and mine[0]["email"] == "mia@gmail.com", mine
+    both = c.get("/api/calls", params={"sids": f"{a},{b}"}).json()
+    assert {x["sid"]: x["outcome"] for x in both} == {a: "booked", b: "no booking"}, both
+    d = c.get(f"/api/calls/{a}").json()
+    roles = [t["role"] for t in d["transcript"]]
+    assert roles[0] == "agent" and roles.count("user") == 5 and d["transcript"][1]["text"].startswith("book a meeting"), roles
+    assert c.get("/api/calls").json() == [] and c.get("/api/calls/nope").status_code == 404
+
+
 # ------------------------------------------------------------------ runner
 def main():
     tests = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]

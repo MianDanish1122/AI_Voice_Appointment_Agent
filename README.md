@@ -21,6 +21,9 @@ Groq / Gemini free LLMs, the browser's speech APIs, free Microsoft neural voices
   (or the confirm API for exactly the summary shown), then the real event is created. **Success is shown only
   after Google confirms.** Booking is idempotent (deterministic event id, unique slot) so a double click or retry cannot
   create a second event, and a failed calendar call never leaves a half-booking behind.
+- **Call history.** Every conversation (who said what, how it ended: booked / no booking / transferred) is saved as a text
+  transcript in SQLite (`app/callog.py`); the **history** button lists this browser's own calls and shows the full
+  conversation. No audio is stored, and a visitor can only fetch the call ids their own browser created.
 - **Human handoff** ("let me talk to a person" -> instant transfer to `HUMAN_PHONE`), knowledge-base answers from `knowledge/`,
   Twilio phone webhooks for a real phone number.
 
@@ -109,9 +112,9 @@ URL), and Vapi bills calls against your Vapi credits.
 ## Tests
 
 ```powershell
-.\.venv\Scripts\python -m tests.smoke_test      # 30 offline tests (fake LLM + fake Google + design lint), ~10 s
+.\.venv\Scripts\python -m tests.smoke_test      # 31 offline tests (fake LLM + fake Google + design lint), ~10 s
 .\.venv\Scripts\pip install -r requirements-dev.txt
-.\.venv\Scripts\python -m tests.ui_test         # 13 real-Chrome tests of the voice page + backend (incl. fit-to-screen on 8 window sizes) (screens in tests/screens/)
+.\.venv\Scripts\python -m tests.ui_test         # 14 real-Chrome tests of the voice page + backend (incl. fit-to-screen on 8 window sizes) (screens in tests/screens/)
 .\.venv\Scripts\python -m tests.live_e2e_test   # real LLM + REAL Google Calendar: books, verifies, deletes the test event
 .\.venv\Scripts\python -m tests.live_chat_test  # real LLM answers (questions, out-of-scope, Sunday, human)
 ```

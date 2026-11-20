@@ -4,12 +4,12 @@ import logging
 import uuid
 from xml.sax.saxutils import escape
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import calendar_store, config, gcal, llm, vapi
+from . import calendar_store, callog, config, gcal, llm, vapi
 from .agent import SESSIONS, end_session, get_session
 from .booking import pretty_when
 from .kb import kb
@@ -361,6 +361,20 @@ async def tts(text: str):
 
 
 # ---------------------------------------------------------------- Admin
+@app.get("/api/calls")
+async def call_history(sids: str = ""):
+    """Summaries of the calls this browser made (it sends its own call ids), newest first."""
+    return await asyncio.to_thread(callog.list_calls, [x.strip() for x in sids.split(",")])
+
+
+@app.get("/api/calls/{sid}")
+async def call_detail(sid: str):
+    row = await asyncio.to_thread(callog.get_call, sid)
+    if not row:
+        raise HTTPException(404, "call not found")
+    return row
+
+
 @app.get("/api/bookings")
 async def bookings():
     return calendar_store.list_bookings()

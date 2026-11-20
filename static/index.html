@@ -39,6 +39,22 @@ button, select, input, summary { font: inherit; color: inherit; text-transform: 
 /* N9 · edge-aligned nav: wordmark hard-left, one control hard-right, the space between is the design */
 .nav { max-width: 82rem; margin-inline: auto; display: flex; justify-content: space-between; align-items: center; gap: var(--space-md); padding: var(--space-md) var(--page-gutter); }
 .wordmark { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-display); font-size: var(--text-lg); letter-spacing: -0.01em; color: var(--color-ink); text-decoration: none; }
+.nav__tools { display: flex; gap: var(--space-xs); flex: none; }
+.hist { width: min(52rem, calc(100% - var(--space-lg))); max-height: min(40rem, calc(100% - var(--space-lg))); padding: var(--space-lg); background: var(--color-paper-2); color: var(--color-ink); border: var(--rule-hair) solid var(--color-rule-2); border-radius: var(--radius-card); box-shadow: var(--shadow-depth); overflow: hidden; }
+.hist[open] { display: flex; flex-direction: column; gap: var(--space-sm); }
+.hist::backdrop { background: var(--color-scrim); }
+.hist__head { display: flex; justify-content: space-between; align-items: center; gap: var(--space-md); }
+.hist__head .sec__title { margin: 0; }
+.hist__note { margin: 0; color: var(--color-muted); font-size: var(--text-sm); }
+.hist__body { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: minmax(0, 18rem) minmax(0, 1fr); gap: var(--space-md); }
+.hist__list { list-style: none; margin: 0; padding: 0; overflow-y: auto; min-height: 0; border-top: var(--rule-hair) solid var(--color-rule); }
+.hist__item { display: block; width: 100%; appearance: none; background: transparent; color: var(--color-ink); text-align: left; cursor: pointer; border: 0; border-bottom: var(--rule-hair) solid var(--color-rule); padding: var(--space-sm) var(--space-xs); font: inherit; font-size: var(--text-sm); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hist__item:hover, .hist__item[aria-current="true"] { background: var(--color-card-emit-hover); }
+.hist__item small { display: block; color: var(--color-muted); overflow: hidden; text-overflow: ellipsis; }
+.hist__view { overflow-y: auto; min-height: 0; border-top: var(--rule-hair) solid var(--color-rule); padding-top: var(--space-sm); }
+.hist__meta { margin: 0 0 var(--space-sm); color: var(--color-muted); font-size: var(--text-sm); overflow-wrap: anywhere; }
+.hist__empty { color: var(--color-muted); font-size: var(--text-sm); padding: var(--space-sm) 0; }
+@media (max-width: 40rem) { .hist__body { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 9rem) minmax(0, 1fr); } }
 .theme { flex: none; appearance: none; background: transparent; border: var(--rule-hair) solid var(--color-rule-2); border-radius: var(--radius-pill); padding: var(--space-xs) var(--space-md); cursor: pointer; white-space: nowrap; color: var(--color-ink-2); }
 .theme:hover { border-color: var(--color-accent); }
 .theme:active { transform: translateY(1px); }
@@ -141,6 +157,7 @@ select { width: 100%; padding: var(--space-xs) var(--space-sm); border: var(--ru
 .row dt { margin: 0; }
 .row dd { margin: 0; min-width: 0; font-size: var(--text-md); color: var(--color-ink); overflow-wrap: anywhere; }
 .row dd.is-empty { color: var(--color-muted); }
+.row dd.is-heard { color: var(--color-muted); text-decoration: underline dotted; text-underline-offset: 0.25em; }
 .row__aux { grid-column: 2; display: flex; flex-wrap: wrap; gap: var(--space-2xs) var(--space-sm); align-items: baseline; min-width: 0; }
 .row__aux[hidden] { display: none; }
 .tag.ok { color: var(--color-accent); } .tag.warn { color: var(--color-accent-2); }
@@ -265,8 +282,21 @@ select { width: 100%; padding: var(--space-xs) var(--space-sm); border: var(--ru
 <a class="skip" href="#stage">skip to the call</a>
 <header class="nav">
   <a class="wordmark" id="wordmark" href="/">voice agent</a>
-  <button class="theme" id="themeBtn" type="button" aria-pressed="false" aria-label="switch between night and day theme"><span id="themeLabel">night</span></button>
+  <div class="nav__tools"><button class="theme" id="histBtn" type="button" aria-haspopup="dialog">history</button>
+  <button class="theme" id="themeBtn" type="button" aria-pressed="false" aria-label="switch between night and day theme"><span id="themeLabel">night</span></button></div>
 </header>
+
+<dialog class="hist" id="hist" aria-labelledby="hHist">
+  <div class="hist__head">
+    <h2 class="sec__title" id="hHist">your calls</h2>
+    <button class="theme" id="histClose" type="button">close</button>
+  </div>
+  <p class="hist__note" id="histNote">text transcripts of the calls made from this browser. no audio is stored.</p>
+  <div class="hist__body">
+    <ul class="hist__list" id="histList"></ul>
+    <div class="hist__view" id="histView" aria-live="polite"></div>
+  </div>
+</dialog>
 
 <main class="shell">
   <!-- the call: the stage is the product -->
@@ -642,7 +672,7 @@ function finishUtterance() {
 async function ensureSession() {
   if (S.sid) return S.sid;
   const r = await api('/api/web/start', { silent: true });
-  S.sid = r.session_id; render(r.state);
+  S.sid = r.session_id; rememberCall(S.sid); render(r.state);
   return S.sid;
 }
 function showFirstWords(ms) { if (ms != null) $('statFirst').textContent = (ms / 1000).toFixed(1) + ' s'; }
@@ -740,7 +770,7 @@ async function startCall() {
   initAudio();                                   // level meter + permission prompt; non-blocking
   try {
     const r = await api('/api/web/start', { silent: false, session_id: S.sid });
-    S.sid = r.session_id; render(r.state); setCallUI('live');
+    S.sid = r.session_id; rememberCall(S.sid); render(r.state); setCallUI('live');
     await agentSay(r.reply);
   } catch (e) { note('could not start the call: ' + e.message, 'bad'); setCallUI('error'); endCall(true); }
 }
@@ -774,7 +804,8 @@ function tagFor(f, st) {
 function setRow(f, st, prev) {
   const v = st.values[f] || '', dd = $('v' + cap(f)), row = document.querySelector(`.row[data-f="${f}"]`);
   const text = !v ? '' : f === 'date' ? fmtDate(v) : f === 'time' ? fmtTime(v) : v;
-  dd.textContent = text || '—'; dd.classList.toggle('is-empty', !text);
+  const raw = (st.heard || {})[f] || '', heardText = !text && raw ? (f === 'date' ? fmtDate(raw) : f === 'time' ? fmtTime(raw) : raw) : '';
+  dd.textContent = text || heardText || '—'; dd.classList.toggle('is-empty', !text && !heardText); dd.classList.toggle('is-heard', !!heardText);
   if (text && prev && prev.values[f] !== v) flash(row);
   const [tag, cls] = tagFor(f, st), t = $('tag' + cap(f));
   t.textContent = tag; t.className = 'tag ' + cls;
@@ -821,6 +852,43 @@ function render(st) {
   renderSlot(st); renderSteps(st); renderCue(st); renderSuccess(st);
 }
 const FIELDS = ['date', 'time', 'name', 'email', 'purpose'];
+
+
+/* ------------------------------------------------------------------ call history (this browser's own calls) */
+const CALLS_KEY = 'va.calls';
+function myCalls() { try { return JSON.parse(localStorage.getItem(CALLS_KEY) || '[]'); } catch (_) { return []; } }
+function rememberCall(sid) { try { const a = myCalls().filter(x => x !== sid); a.unshift(sid); localStorage.setItem(CALLS_KEY, JSON.stringify(a.slice(0, 50))); } catch (_) {} }
+function fmtDur(s) { return String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0'); }
+async function openHistory() {
+  $('hist').showModal(); $('histView').textContent = ''; $('histList').textContent = '';
+  const ids = myCalls();
+  if (!ids.length) { $('histList').innerHTML = '<li class="hist__empty">no calls yet.</li>'; return; }
+  let rows = []; try { rows = await api('/api/calls?sids=' + encodeURIComponent(ids.join(','))); } catch (_) {}
+  if (!rows.length) { $('histList').innerHTML = '<li class="hist__empty">no calls yet.</li>'; return; }
+  rows.forEach((r, i) => {
+    const li = document.createElement('li'), b = document.createElement('button'); b.type = 'button'; b.className = 'hist__item'; b.dataset.sid = r.sid;
+    const when = new Date(r.started).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+    b.textContent = (r.name || 'caller') + ' · ' + when;
+    const sm = document.createElement('small'); sm.textContent = r.outcome + ' · ' + r.turns + ' lines · ' + fmtDur(r.seconds); b.appendChild(sm);
+    b.onclick = () => showCall(r.sid, b); li.appendChild(b); $('histList').appendChild(li);
+    if (i === 0) showCall(r.sid, b);
+  });
+}
+async function showCall(sid, btn) {
+  document.querySelectorAll('.hist__item').forEach(x => x.removeAttribute('aria-current')); btn.setAttribute('aria-current', 'true');
+  const box = $('histView'); box.textContent = '';
+  let c; try { c = await api('/api/calls/' + sid); } catch (_) { box.innerHTML = '<p class="hist__empty">could not load this call.</p>'; return; }
+  const m = document.createElement('p'); m.className = 'hist__meta';
+  m.textContent = [c.outcome, c.channel, c.email].filter(Boolean).join(' · '); box.appendChild(m);
+  c.transcript.forEach(t => {
+    const wrap = document.createElement('div'); wrap.className = 'line ' + t.role;
+    const who = document.createElement('span'); who.className = 'who'; who.textContent = t.role === 'agent' ? 'AGENT' : 'YOU';
+    const p = document.createElement('p'); p.className = 'text'; p.textContent = t.text; wrap.append(who, p); box.appendChild(wrap);
+  });
+}
+$('histBtn').onclick = openHistory;
+$('histClose').onclick = () => $('hist').close();
+$('hist').addEventListener('click', e => { if (e.target === $('hist')) $('hist').close(); });
 
 /* ------------------------------------------------------------------ recent bookings + boot */
 async function loadBookings() {
